@@ -1,0 +1,28 @@
+---
+name: Custom issue template
+about: Describe this issue template's purpose here.
+title: ''
+labels: ''
+assignees: ''
+
+---
+
+**📌 이슈 요약**
+
+> 이슈를 한 줄로 요약해주세요.
+> 
+
+**📝 상세 내용**
+
+> 구체적인 내용을 작성해주세요. (이미지 첨부 가능)
+> 
+
+**✅ 체크리스트**
+
+- [ ]  TODO
+- [ ]  TODO
+
+**📎 참고 사항 (선택)**
+
+> 관련 자료나 링크가 있다면 첨부해주세요.
+>
