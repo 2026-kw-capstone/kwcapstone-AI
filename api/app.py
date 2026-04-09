@@ -11,6 +11,7 @@ from services.stt_service import transcribe_audio
 from services.score_service import evaluate_reference_response, evaluate_scenario_response
 from services.chat_service import generate_free_talk_reply
 from services.tts_service import text_to_speech
+from services.voice_analysis_service import analyze_voice
 
 app = FastAPI()
 
@@ -125,10 +126,13 @@ def practice_reference(req: ReferencePracticeRequest, x_api_token: Optional[str]
             stt_text=stt_text
         )
 
+        voice_result = analyze_voice(wav_path, stt_text)
+
         return {
             "success": True,
             "mode": "reference_practice",
-            **eval_result
+            **eval_result,
+            "voiceAnalysis": voice_result
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -171,6 +175,8 @@ def practice_scenario(req: ScenarioPracticeRequest, x_api_token: Optional[str] =
         step_content = f"AI 질문: {req.assistantMessage}\n사용자 연습 목표: {req.userIntent}"
         eval_result = evaluate_scenario_response(step_content, stt_text)
 
+        voice_result = analyze_voice(wav_path, stt_text)
+
         return {
             "success": True,
             "mode": "scenario_practice",
@@ -178,7 +184,8 @@ def practice_scenario(req: ScenarioPracticeRequest, x_api_token: Optional[str] =
             "step": req.step,
             "assistantMessage": req.assistantMessage,
             "userIntent": req.userIntent,
-            **eval_result
+            **eval_result,
+            "voiceAnalysis": voice_result
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

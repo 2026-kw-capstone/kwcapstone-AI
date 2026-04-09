@@ -6,3 +6,5 @@ pydub
 jiwer
 requests
 openai-whisper
+librosa
+numpy

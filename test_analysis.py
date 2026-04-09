@@ -8,11 +8,11 @@ S3 업로드나 음성 파일 없이 바로 실행 가능.
 
 import sys
 import os
-import json
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from services.score_service import evaluate_reference_response, evaluate_scenario_response
+from services.voice_analysis_service import analyze_voice
 
 
 # -------------------------------------------------------
@@ -39,13 +39,34 @@ def print_word_analysis(word_analysis: list):
         )
 
 
-def print_result(result: dict):
+def print_voice_analysis(voice: dict):
+    grade_symbol = {"good": "✅", "warn": "⚠️", "error": "❌"}
+    print("\n  [음성 분석]")
+
+    loudness = voice.get("loudness", {})
+    sym = grade_symbol.get(loudness.get("grade", ""), "?")
+    print(f"  🔊 음량      : {loudness.get('avgDb', 'N/A')} dBFS  {sym} {loudness.get('label', '')}")
+
+    rate = voice.get("speechRate", {})
+    sym = grade_symbol.get(rate.get("grade", ""), "?")
+    print(f"  ⚡ 발화속도  : {rate.get('syllablesPerSecond', 'N/A')} 음절/초  ({rate.get('syllableCount')}음절 / {rate.get('durationSeconds')}초)  {sym} {rate.get('label', '')}")
+
+    silence = voice.get("silenceRatio", {})
+    sym = grade_symbol.get(silence.get("grade", ""), "?")
+    print(f"  ⏸ 침묵비율  : {silence.get('silencePercent', 'N/A')}%  {sym} {silence.get('label', '')}")
+
+
+def print_result(result: dict, voice: dict = None):
     print(f"\n  referenceText    : {result.get('referenceText')}")
     print(f"  sttText          : {result.get('sttText')}")
     print(f"  pronunciationScore : {result.get('pronunciationScore')}점")
     print(f"  meaningDeliveryScore : {result.get('meaningDeliveryScore')}점")
     print(f"  feedback         : {result.get('feedback')}")
     print_word_analysis(result.get("wordAnalysis", []))
+    if voice:
+        print_voice_analysis(voice)
+    else:
+        print("\n  [음성 분석] 오디오 파일 없음 (텍스트 전용 테스트)")
 
 
 # -------------------------------------------------------
@@ -56,6 +77,7 @@ REFERENCE_CASES = [
         "desc": "정확하게 발음한 경우",
         "referenceText": "물 좀 주세요",
         "sttText": "물 좀 주세요",
+        # "audioPath": "data/output/sample.wav",  # 실제 wav 파일 경로 지정 시 음성 분석 포함
     },
     {
         "desc": "초성 오류 (주 → 부)",
@@ -88,7 +110,9 @@ def test_reference():
             reference_text=case["referenceText"],
             stt_text=case["sttText"],
         )
-        print_result(result)
+        audio_path = case.get("audioPath")
+        voice = analyze_voice(audio_path, case["sttText"]) if audio_path and os.path.exists(audio_path) else None
+        print_result(result, voice)
 
 
 # -------------------------------------------------------
@@ -100,6 +124,7 @@ SCENARIO_CASES = [
         "assistantMessage": "성함이랑 생년월일이 어떻게 되세요?",
         "userIntent": "이름과 생년월일을 정확하게 말해 보세요.",
         "sttText": "김철수이고요 1990년 3월 5일입니다",
+        # "audioPath": "data/output/sample.wav",  # 실제 wav 파일 경로 지정 시 음성 분석 포함
     },
     {
         "desc": "증상 설명 - 의도 전달 성공",
@@ -131,9 +156,11 @@ def test_scenario():
             step_content=step_content,
             stt_text=case["sttText"],
         )
+        audio_path = case.get("audioPath")
+        voice = analyze_voice(audio_path, case["sttText"]) if audio_path and os.path.exists(audio_path) else None
         print(f"  assistantMessage : {case['assistantMessage']}")
         print(f"  userIntent       : {case['userIntent']}")
-        print_result(result)
+        print_result(result, voice)
 
 
 # -------------------------------------------------------
