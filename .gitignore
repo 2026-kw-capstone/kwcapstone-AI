@@ -1,0 +1,32 @@
+# 환경변수 (절대 올리면 안 됨)
+.env
+*.env
+
+# 오디오 데이터 파일
+data/input/
+data/output/
+
+# Python 캐시
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# 가상환경
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# 로그
+*.log
