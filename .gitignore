@@ -30,3 +30,4 @@ ENV/
 
 # 로그
 *.log
+*.ipynb
