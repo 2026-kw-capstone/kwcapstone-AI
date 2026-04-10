@@ -307,30 +307,24 @@ class TestAttachSyllableTimestamps:
 class TestEvaluateReferenceResponse:
     def test_result_keys(self):
         result = evaluate_reference_response("안녕하세요", "안녕하세요")
-        required = [
-            "referenceText", "sttText",
-            "pronunciationScore", "meaningDeliveryScore",
-            "feedback", "wordAnalysis",
-        ]
+        required = ["referenceText", "sttText", "pronunciationScore", "feedback", "wordAnalysis"]
         for key in required:
             assert key in result, f"누락된 키: {key}"
 
     def test_removed_keys(self):
-        """wer, cer, similarityScore, diffAnalysis, insertions 는 제거됨."""
+        """의미 전달률 및 내부 지표는 제거됨."""
         result = evaluate_reference_response("안녕하세요", "안녕하세요")
-        for key in ("wer", "cer", "similarityScore", "diffAnalysis", "insertions",
-                    "referenceSource", "evaluationMode"):
+        for key in ("meaningDeliveryScore", "wer", "cer", "similarityScore",
+                    "diffAnalysis", "insertions", "referenceSource", "evaluationMode"):
             assert key not in result, f"제거됐어야 할 키가 남아 있음: {key}"
 
-    def test_perfect_scores(self):
+    def test_perfect_score(self):
         result = evaluate_reference_response("안녕하세요", "안녕하세요")
         assert result["pronunciationScore"] == 100.0
-        assert result["meaningDeliveryScore"] == 100.0
 
-    def test_score_ranges(self):
+    def test_score_range(self):
         result = evaluate_reference_response("안녕하세요", "감사합니다")
         assert 0.0 <= result["pronunciationScore"] <= 100.0
-        assert 0.0 <= result["meaningDeliveryScore"] <= 100.0
 
     def test_word_analysis_simplified(self):
         """wordAnalysis 항목은 refChar, hypChar, grade 만 포함."""

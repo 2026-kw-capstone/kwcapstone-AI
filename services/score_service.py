@@ -427,7 +427,6 @@ def evaluate_reference_response(
         "referenceText": reference_text,
         "sttText": stt_text,
         "pronunciationScore": round(float(avg_word_score), 2),
-        "meaningDeliveryScore": round(max(0.0, 100 * (1 - float(reference_scores.get("cer", 1.0)))), 2),
         "feedback": rule_feedback,
         "wordAnalysis": simplified_word_analysis,
     }

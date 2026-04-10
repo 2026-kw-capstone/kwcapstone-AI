@@ -121,9 +121,10 @@ components:
             - error : 3개 모두 다름 또는 누락
           example: good
 
-    # ── 연습 응답 공통 필드 ─────────────────────────────────────────────────────
-    PracticeResponseBase:
+    # ── 참조 텍스트 기반 연습 응답 ─────────────────────────────────────────────
+    ReferencePracticeResponse:
       type: object
+      description: 기준 문장이 있으므로 발음 정확도만 제공
       properties:
         success:
           type: boolean
@@ -141,11 +142,6 @@ components:
           format: float
           description: "발음 정확도 (0~100, 음절별 초/중/종성 비교 평균)"
           example: 85.5
-        meaningDeliveryScore:
-          type: number
-          format: float
-          description: "의미 전달률 (0~100)"
-          example: 78.3
         feedback:
           type: string
           description: AI 맞춤 피드백
@@ -153,6 +149,47 @@ components:
         wordAnalysis:
           type: array
           description: 음절 단위 발음 평가 (음절 카드 표시용)
+          items:
+            $ref: '#/components/schemas/WordAnalysisItem'
+        voiceAnalysis:
+          $ref: '#/components/schemas/VoiceAnalysis'
+
+    # ── 시나리오 기반 연습 응답 ────────────────────────────────────────────────
+    ScenarioPracticeResponse:
+      type: object
+      description: 기준 문장이 없으므로 발음 정확도 + 의미 전달률 모두 제공
+      properties:
+        success:
+          type: boolean
+          example: true
+        levelTitle:
+          type: string
+          example: "병원 접수하기"
+        step:
+          type: string
+          example: "접수 요청하기"
+        referenceText:
+          type: string
+          description: LLM이 추론한 참조 텍스트
+          example: "진료 예약을 하러 왔어요"
+        sttText:
+          type: string
+          example: "진료 보러 왔어요"
+        pronunciationScore:
+          type: number
+          format: float
+          description: "발음 정확도 (0~100)"
+          example: 85.5
+        meaningDeliveryScore:
+          type: number
+          format: float
+          description: "의미 전달률 (0~100, LLM 맥락 평가)"
+          example: 78.3
+        feedback:
+          type: string
+          example: "자연스럽게 잘 전달했어요. 받침을 조금 더 또렷하게 발음해보세요."
+        wordAnalysis:
+          type: array
           items:
             $ref: '#/components/schemas/WordAnalysisItem'
         voiceAnalysis:
@@ -399,13 +436,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PracticeResponseBase'
+                $ref: '#/components/schemas/ReferencePracticeResponse'
               example:
                 success: true
                 referenceText: "안녕하세요"
                 sttText: "안녕하세요"
                 pronunciationScore: 85.5
-                meaningDeliveryScore: 78.3
                 feedback: "받침이나 끝소리가 약하게 들린 부분이 있어요."
                 wordAnalysis:
                   - refChar: "안"
@@ -472,16 +508,7 @@ paths:
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/PracticeResponseBase'
-                  - type: object
-                    properties:
-                      levelTitle:
-                        type: string
-                        example: "병원 접수하기"
-                      step:
-                        type: string
-                        example: "접수 요청하기"
+                $ref: '#/components/schemas/ScenarioPracticeResponse'
         '401':
           $ref: '#/components/schemas/ErrorResponse'
         '500':

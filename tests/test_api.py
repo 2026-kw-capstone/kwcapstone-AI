@@ -292,31 +292,26 @@ class TestReferencePracticeEndpoint:
 
     def test_score_fields_present(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
-        for field in ["pronunciationScore", "meaningDeliveryScore"]:
-            assert field in data
+        assert "pronunciationScore" in data
 
     def test_removed_fields_absent(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
-        for field in ["wer", "cer", "similarityScore", "diffAnalysis", "insertions",
-                      "mode", "referenceSource", "evaluationMode"]:
+        for field in ["meaningDeliveryScore", "wer", "cer", "similarityScore",
+                      "diffAnalysis", "insertions", "mode", "referenceSource", "evaluationMode"]:
             assert field not in data, f"제거됐어야 할 필드: {field}"
 
-    def test_score_types(self, synthetic_wav):
+    def test_score_type(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
-        for field in ["pronunciationScore", "meaningDeliveryScore"]:
-            assert isinstance(data[field], (int, float))
+        assert isinstance(data["pronunciationScore"], (int, float))
 
-    def test_score_ranges(self, synthetic_wav):
+    def test_score_range(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
         assert 0.0 <= data["pronunciationScore"] <= 100.0
-        assert 0.0 <= data["meaningDeliveryScore"] <= 100.0
 
     def test_perfect_score_when_exact_match(self, synthetic_wav):
         """STT 결과가 referenceText와 완전히 일치하면 100점."""
         res = self._call(synthetic_wav, stt_text="안녕하세요", ref_text="안녕하세요")
-        data = res.json()
-        assert data["pronunciationScore"] == 100.0
-        assert data["meaningDeliveryScore"] == 100.0
+        assert res.json()["pronunciationScore"] == 100.0
 
     def test_lower_score_on_mismatch(self, synthetic_wav):
         """STT 결과가 referenceText와 다르면 100점 미만."""
