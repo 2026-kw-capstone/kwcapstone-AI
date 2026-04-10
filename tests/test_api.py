@@ -290,24 +290,26 @@ class TestReferencePracticeEndpoint:
         assert res.status_code == 200
         assert res.json()["success"] is True
 
-    def test_mode_field(self, synthetic_wav):
-        assert self._call(synthetic_wav).json()["mode"] == "reference_practice"
-
     def test_score_fields_present(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
-        for field in ["pronunciationScore", "similarityScore", "meaningDeliveryScore", "wer", "cer"]:
+        for field in ["pronunciationScore", "meaningDeliveryScore"]:
             assert field in data
+
+    def test_removed_fields_absent(self, synthetic_wav):
+        data = self._call(synthetic_wav).json()
+        for field in ["wer", "cer", "similarityScore", "diffAnalysis", "insertions",
+                      "mode", "referenceSource", "evaluationMode"]:
+            assert field not in data, f"제거됐어야 할 필드: {field}"
 
     def test_score_types(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
-        for field in ["pronunciationScore", "similarityScore", "meaningDeliveryScore"]:
+        for field in ["pronunciationScore", "meaningDeliveryScore"]:
             assert isinstance(data[field], (int, float))
 
     def test_score_ranges(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
         assert 0.0 <= data["pronunciationScore"] <= 100.0
         assert 0.0 <= data["meaningDeliveryScore"] <= 100.0
-        assert 0.0 <= data["similarityScore"] <= 100.0
 
     def test_perfect_score_when_exact_match(self, synthetic_wav):
         """STT 결과가 referenceText와 완전히 일치하면 100점."""
@@ -326,21 +328,11 @@ class TestReferencePracticeEndpoint:
         assert isinstance(data["wordAnalysis"], list)
 
     def test_word_analysis_item_keys(self, synthetic_wav):
+        """wordAnalysis 항목은 refChar, hypChar, grade 만 포함."""
         data = self._call(synthetic_wav, stt_text="안녕", ref_text="안녕").json()
         for item in data["wordAnalysis"]:
-            assert "refChar" in item
-            assert "hypChar" in item
-            assert "score" in item
-            assert "grade" in item
+            assert set(item.keys()) == {"refChar", "hypChar", "grade"}
             assert item["grade"] in ("good", "warn", "error")
-
-    def test_diff_analysis_structure(self, synthetic_wav):
-        data = self._call(synthetic_wav).json()
-        diff = data["diffAnalysis"]
-        assert "referenceChars" in diff
-        assert "sttChars" in diff
-        assert "aligned" in diff
-        assert "mismatchIndexes" in diff
 
     def test_voice_analysis_present(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
@@ -353,6 +345,7 @@ class TestReferencePracticeEndpoint:
         voice = self._call(synthetic_wav).json()["voiceAnalysis"]
         for key in ("loudness", "speechRate", "silenceRatio"):
             assert voice[key]["grade"] in ("good", "warn", "error")
+            assert "label" in voice[key]
 
     def test_loudness_is_good_for_synthetic(self, synthetic_wav):
         """합성 WAV(~-11 dBFS) → 음량 good."""
@@ -370,17 +363,9 @@ class TestReferencePracticeEndpoint:
             )
         assert res.json()["voiceAnalysis"]["loudness"]["grade"] == "error"
 
-    def test_insertions_is_list(self, synthetic_wav):
-        assert isinstance(self._call(synthetic_wav).json()["insertions"], list)
-
     def test_feedback_is_nonempty_string(self, synthetic_wav):
         feedback = self._call(synthetic_wav).json()["feedback"]
         assert isinstance(feedback, str) and len(feedback) > 0
-
-    def test_reference_source(self, synthetic_wav):
-        data = self._call(synthetic_wav).json()
-        assert data["referenceSource"] == "user_input"
-        assert data["evaluationMode"] == "reference_only"
 
     def test_required_fields_validation(self):
         res = client.post("/practice/reference", json={"s3Url": "https://mock.s3/audio.wav"})
@@ -422,31 +407,26 @@ class TestScenarioPracticeEndpoint:
     def test_success_flag(self, synthetic_wav):
         assert self._call(synthetic_wav).json()["success"] is True
 
-    def test_mode_field(self, synthetic_wav):
-        assert self._call(synthetic_wav).json()["mode"] == "scenario_practice"
-
     def test_echo_input_fields(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
         assert data["levelTitle"] == "병원 접수하기"
         assert data["step"] == "용무 말하기"
-        assert data["assistantMessage"] == "어떻게 오셨나요?"
-        assert data["userIntent"] == "진료를 보러 왔다고 말해보세요."
 
-    def test_reference_source_is_llm(self, synthetic_wav):
+    def test_removed_fields_absent(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
-        assert data["referenceSource"] == "llm"
-        assert data["evaluationMode"] == "scenario_llm_only"
+        for field in ("wer", "cer", "similarityScore", "diffAnalysis", "insertions",
+                      "mode", "referenceSource", "evaluationMode", "assistantMessage", "userIntent"):
+            assert field not in data, f"제거됐어야 할 필드: {field}"
 
     def test_score_fields_present(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
-        for field in ["pronunciationScore", "meaningDeliveryScore", "similarityScore", "wer", "cer"]:
+        for field in ["pronunciationScore", "meaningDeliveryScore"]:
             assert field in data
 
     def test_score_ranges(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
         assert 0.0 <= data["pronunciationScore"] <= 100.0
         assert 0.0 <= data["meaningDeliveryScore"] <= 100.0
-        assert 0.0 <= data["similarityScore"] <= 100.0
 
     def test_voice_analysis_present(self, synthetic_wav):
         voice = self._call(synthetic_wav).json()["voiceAnalysis"]
@@ -458,6 +438,7 @@ class TestScenarioPracticeEndpoint:
         voice = self._call(synthetic_wav).json()["voiceAnalysis"]
         for key in ("loudness", "speechRate", "silenceRatio"):
             assert voice[key]["grade"] in ("good", "warn", "error")
+            assert "label" in voice[key]
 
     def test_word_analysis_is_list(self, synthetic_wav):
         assert isinstance(self._call(synthetic_wav).json()["wordAnalysis"], list)

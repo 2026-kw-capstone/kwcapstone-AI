@@ -130,7 +130,6 @@ def practice_reference(req: ReferencePracticeRequest, x_api_token: Optional[str]
 
         return {
             "success": True,
-            "mode": "reference_practice",
             **eval_result,
             "voiceAnalysis": voice_result
         }
@@ -179,11 +178,8 @@ def practice_scenario(req: ScenarioPracticeRequest, x_api_token: Optional[str] =
 
         return {
             "success": True,
-            "mode": "scenario_practice",
             "levelTitle": req.levelTitle,
             "step": req.step,
-            "assistantMessage": req.assistantMessage,
-            "userIntent": req.userIntent,
             **eval_result,
             "voiceAnalysis": voice_result
         }

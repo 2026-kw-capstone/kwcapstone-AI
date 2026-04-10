@@ -308,53 +308,36 @@ class TestEvaluateReferenceResponse:
     def test_result_keys(self):
         result = evaluate_reference_response("안녕하세요", "안녕하세요")
         required = [
-            "referenceText", "sttText", "referenceSource", "evaluationMode",
-            "meaningDeliveryScore", "pronunciationScore", "feedback",
-            "wordAnalysis", "diffAnalysis", "insertions", "similarityScore",
-            "wer", "cer",
+            "referenceText", "sttText",
+            "pronunciationScore", "meaningDeliveryScore",
+            "feedback", "wordAnalysis",
         ]
         for key in required:
             assert key in result, f"누락된 키: {key}"
+
+    def test_removed_keys(self):
+        """wer, cer, similarityScore, diffAnalysis, insertions 는 제거됨."""
+        result = evaluate_reference_response("안녕하세요", "안녕하세요")
+        for key in ("wer", "cer", "similarityScore", "diffAnalysis", "insertions",
+                    "referenceSource", "evaluationMode"):
+            assert key not in result, f"제거됐어야 할 키가 남아 있음: {key}"
 
     def test_perfect_scores(self):
         result = evaluate_reference_response("안녕하세요", "안녕하세요")
         assert result["pronunciationScore"] == 100.0
         assert result["meaningDeliveryScore"] == 100.0
-        assert result["wer"] == 0.0
-        assert result["cer"] == 0.0
-        assert result["similarityScore"] == 100.0
-
-    def test_reference_source_and_mode(self):
-        result = evaluate_reference_response("안녕", "안녕")
-        assert result["referenceSource"] == "user_input"
-        assert result["evaluationMode"] == "reference_only"
 
     def test_score_ranges(self):
         result = evaluate_reference_response("안녕하세요", "감사합니다")
         assert 0.0 <= result["pronunciationScore"] <= 100.0
         assert 0.0 <= result["meaningDeliveryScore"] <= 100.0
-        assert 0.0 <= result["similarityScore"] <= 100.0
 
-    def test_word_analysis_structure(self):
+    def test_word_analysis_simplified(self):
+        """wordAnalysis 항목은 refChar, hypChar, grade 만 포함."""
         result = evaluate_reference_response("물 좀 주세요", "물 좀 주세요")
         for item in result["wordAnalysis"]:
-            assert "refChar" in item
-            assert "hypChar" in item
-            assert "score" in item
-            assert item["score"] in (0, 10, 40, 70, 100)
+            assert set(item.keys()) == {"refChar", "hypChar", "grade"}
             assert item["grade"] in ("good", "warn", "error")
-
-    def test_diff_analysis_structure(self):
-        result = evaluate_reference_response("가나다", "가나다")
-        diff = result["diffAnalysis"]
-        assert "referenceChars" in diff
-        assert "sttChars" in diff
-        assert "aligned" in diff
-        assert "mismatchIndexes" in diff
-
-    def test_insertions_is_list(self):
-        result = evaluate_reference_response("안녕", "안녕")
-        assert isinstance(result["insertions"], list)
 
     def test_feedback_is_string(self):
         result = evaluate_reference_response("안녕하세요", "안녕하세요")

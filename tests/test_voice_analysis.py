@@ -94,7 +94,7 @@ class TestAnalyzeLoudness:
         assert result["avgDb"] < -35
 
     def test_silent_audio_does_not_crash(self):
-        """완전 무음 신호 처리 시 예외 없이 -80 반환."""
+        """완전 무음 신호도 예외 없이 처리."""
         y = np.zeros(16000, dtype=np.float32)
         result = analyze_loudness(y, 16000)
 
@@ -115,31 +115,7 @@ class TestAnalyzeSpeechRate:
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
         result = analyze_speech_rate(y, sr, "안녕하세요")
 
-        assert set(result.keys()) == {
-            "syllablesPerSecond", "syllableCount", "durationSeconds", "grade", "label"
-        }
-
-    def test_syllable_count_matches_input(self, synthetic_wav):
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        result = analyze_speech_rate(y, sr, "안녕하세요 반갑습니다")
-
-        # 안녕하세요(5) + 반갑습니다(5) = 10
-        assert result["syllableCount"] == 10
-
-    def test_duration_is_positive(self, synthetic_wav):
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        result = analyze_speech_rate(y, sr, "안녕")
-
-        assert result["durationSeconds"] > 0
-
-    def test_rate_formula(self, synthetic_wav):
-        """syllablesPerSecond == syllableCount / durationSeconds 검증."""
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        text = "안녕하세요"
-        result = analyze_speech_rate(y, sr, text)
-
-        expected = round(result["syllableCount"] / result["durationSeconds"], 2)
-        assert result["syllablesPerSecond"] == expected
+        assert set(result.keys()) == {"syllablesPerSecond", "grade", "label"}
 
     def test_empty_text_returns_error(self, synthetic_wav):
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
@@ -152,14 +128,15 @@ class TestAnalyzeSpeechRate:
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
         result = analyze_speech_rate(y, sr, "hello world")
 
-        assert result["syllableCount"] == 0
         assert result["grade"] == "error"
+        assert result["syllablesPerSecond"] == 0.0
 
     def test_grade_is_valid(self, synthetic_wav):
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
         result = analyze_speech_rate(y, sr, "안녕하세요")
 
         assert result["grade"] in ("good", "warn", "error")
+        assert result["syllablesPerSecond"] >= 0
 
     @pytest.mark.parametrize("text", [
         "가",
@@ -172,7 +149,6 @@ class TestAnalyzeSpeechRate:
         result = analyze_speech_rate(y, sr, text)
 
         assert result["grade"] in ("good", "warn", "error")
-        assert result["syllablesPerSecond"] >= 0
 
 
 # ── 침묵 비율 분석 ─────────────────────────────────────────────────────────────
@@ -182,13 +158,7 @@ class TestAnalyzeSilenceRatio:
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
         result = analyze_silence_ratio(y, sr)
 
-        assert set(result.keys()) == {"silenceRatio", "silencePercent", "grade", "label"}
-
-    def test_ratio_range(self, synthetic_wav):
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        result = analyze_silence_ratio(y, sr)
-
-        assert 0.0 <= result["silenceRatio"] <= 1.0
+        assert set(result.keys()) == {"silencePercent", "grade", "label"}
 
     def test_percent_range(self, synthetic_wav):
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
@@ -196,21 +166,14 @@ class TestAnalyzeSilenceRatio:
 
         assert 0.0 <= result["silencePercent"] <= 100.0
 
-    def test_ratio_percent_consistency(self, synthetic_wav):
-        """silenceRatio * 100 ≈ silencePercent (소수점 오차 허용)."""
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        result = analyze_silence_ratio(y, sr)
-
-        assert abs(result["silenceRatio"] * 100 - result["silencePercent"]) < 0.2
-
     def test_grade_is_valid(self, synthetic_wav):
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
         result = analyze_silence_ratio(y, sr)
 
         assert result["grade"] in ("good", "warn", "error")
 
-    def test_mostly_silent_triggers_error(self, mostly_silent_wav):
-        """침묵 ~80% → error 또는 warn."""
+    def test_mostly_silent_triggers_warn_or_error(self, mostly_silent_wav):
+        """침묵 ~80% → warn 또는 error."""
         y, sr = librosa.load(mostly_silent_wav, sr=None, mono=True)
         result = analyze_silence_ratio(y, sr)
 
@@ -218,14 +181,11 @@ class TestAnalyzeSilenceRatio:
         assert result["silencePercent"] > 25
 
     def test_fully_silent_audio(self):
-        """완전 무음 신호도 예외 없이 처리되어야 함.
-        librosa.effects.split 은 완전 무음 입력 시 구현에 따라 결과가 다를 수 있으므로
-        구조(키·범위·등급 타입)만 검증한다."""
+        """완전 무음 신호도 예외 없이 처리."""
         y = np.zeros(16000, dtype=np.float32)
         result = analyze_silence_ratio(y, 16000)
 
-        assert set(result.keys()) == {"silenceRatio", "silencePercent", "grade", "label"}
-        assert 0.0 <= result["silenceRatio"] <= 1.0
+        assert set(result.keys()) == {"silencePercent", "grade", "label"}
         assert result["grade"] in ("good", "warn", "error")
 
 
@@ -239,21 +199,11 @@ class TestAnalyzeVoice:
         assert "speechRate" in result
         assert "silenceRatio" in result
 
-    def test_loudness_subkeys(self, synthetic_wav):
+    def test_all_subkeys(self, synthetic_wav):
         result = analyze_voice(synthetic_wav, "안녕하세요")
         assert set(result["loudness"].keys()) == {"avgDb", "grade", "label"}
-
-    def test_speech_rate_subkeys(self, synthetic_wav):
-        result = analyze_voice(synthetic_wav, "안녕하세요")
-        assert set(result["speechRate"].keys()) == {
-            "syllablesPerSecond", "syllableCount", "durationSeconds", "grade", "label"
-        }
-
-    def test_silence_ratio_subkeys(self, synthetic_wav):
-        result = analyze_voice(synthetic_wav, "안녕하세요")
-        assert set(result["silenceRatio"].keys()) == {
-            "silenceRatio", "silencePercent", "grade", "label"
-        }
+        assert set(result["speechRate"].keys()) == {"syllablesPerSecond", "grade", "label"}
+        assert set(result["silenceRatio"].keys()) == {"silencePercent", "grade", "label"}
 
     def test_all_grades_are_valid(self, synthetic_wav):
         result = analyze_voice(synthetic_wav, "안녕하세요")
@@ -268,7 +218,7 @@ class TestAnalyzeVoice:
         result = analyze_voice(synthetic_wav, "")
 
         assert "loudness" in result
-        assert result["speechRate"]["syllableCount"] == 0
+        assert result["speechRate"]["grade"] == "error"
 
     def test_quiet_audio_loudness(self, quiet_wav):
         result = analyze_voice(quiet_wav, "안녕")

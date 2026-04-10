@@ -418,20 +418,18 @@ def evaluate_reference_response(
         sum(item["score"] for item in word_analysis) / len(word_analysis), 2
     ) if word_analysis else 0.0
 
+    simplified_word_analysis = [
+        {"refChar": item["refChar"], "hypChar": item["hypChar"], "grade": item["grade"]}
+        for item in word_analysis
+    ]
+
     return {
         "referenceText": reference_text,
         "sttText": stt_text,
-        "referenceSource": "user_input",
-        "evaluationMode": "reference_only",
-        "meaningDeliveryScore": round(max(0.0, 100 * (1 - float(reference_scores.get("cer", 1.0)))), 2),
         "pronunciationScore": round(float(avg_word_score), 2),
+        "meaningDeliveryScore": round(max(0.0, 100 * (1 - float(reference_scores.get("cer", 1.0)))), 2),
         "feedback": rule_feedback,
-        "wordAnalysis": word_analysis,
-        "diffAnalysis": alignment_result,
-        "insertions": inserts,
-        "similarityScore": reference_scores.get("similarityScore", 0.0),
-        "wer": reference_scores.get("wer", 1.0),
-        "cer": reference_scores.get("cer", 1.0)
+        "wordAnalysis": simplified_word_analysis,
     }
 
 
@@ -446,7 +444,6 @@ def evaluate_scenario_response(
     meaning_delivery_score = clamp(safe_int(llm_result.get("meaningDeliveryScore", 0), 0), 0, 100)
     llm_feedback = llm_result.get("feedback", "").strip()
 
-    reference_scores = calculate_reference_scores(reference_text, stt_text)
     alignment_result = build_alignment(reference_text, stt_text)
 
     word_analysis, inserts, insert_feedbacks = build_rule_based_analysis(
@@ -467,18 +464,16 @@ def evaluate_scenario_response(
 
     final_feedback = f"{llm_feedback} {rule_feedback}".strip() if llm_feedback else rule_feedback
 
+    simplified_word_analysis = [
+        {"refChar": item["refChar"], "hypChar": item["hypChar"], "grade": item["grade"]}
+        for item in word_analysis
+    ]
+
     return {
         "referenceText": reference_text,
         "sttText": stt_text,
-        "referenceSource": "llm",
-        "evaluationMode": "scenario_llm_only",
-        "meaningDeliveryScore": meaning_delivery_score,
         "pronunciationScore": round(float(avg_word_score), 2),
+        "meaningDeliveryScore": meaning_delivery_score,
         "feedback": final_feedback,
-        "wordAnalysis": word_analysis,
-        "diffAnalysis": alignment_result,
-        "insertions": inserts,
-        "similarityScore": reference_scores.get("similarityScore", 0.0),
-        "wer": reference_scores.get("wer", 1.0),
-        "cer": reference_scores.get("cer", 1.0)
+        "wordAnalysis": simplified_word_analysis,
     }

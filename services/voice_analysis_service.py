@@ -30,11 +30,7 @@ def analyze_loudness(y: np.ndarray, sr: int) -> Dict[str, Any]:
         grade = "error"
         label = "목소리가 너무 작아요"
 
-    return {
-        "avgDb": round(avg_db, 2),
-        "grade": grade,
-        "label": label
-    }
+    return {"avgDb": round(avg_db, 2), "grade": grade, "label": label}
 
 
 def analyze_speech_rate(y: np.ndarray, sr: int, stt_text: str) -> Dict[str, Any]:
@@ -49,13 +45,7 @@ def analyze_speech_rate(y: np.ndarray, sr: int, stt_text: str) -> Dict[str, Any]
     syllable_count = count_korean_syllables(stt_text)
 
     if duration <= 0 or syllable_count == 0:
-        return {
-            "syllablesPerSecond": 0.0,
-            "syllableCount": syllable_count,
-            "durationSeconds": round(duration, 2),
-            "grade": "error",
-            "label": "측정 불가"
-        }
+        return {"syllablesPerSecond": 0.0, "grade": "error", "label": "측정 불가"}
 
     rate = round(syllable_count / duration, 2)
 
@@ -75,13 +65,7 @@ def analyze_speech_rate(y: np.ndarray, sr: int, stt_text: str) -> Dict[str, Any]
         grade = "error"
         label = "너무 빠른 편이에요"
 
-    return {
-        "syllablesPerSecond": rate,
-        "syllableCount": syllable_count,
-        "durationSeconds": round(duration, 2),
-        "grade": grade,
-        "label": label
-    }
+    return {"syllablesPerSecond": rate, "grade": grade, "label": label}
 
 
 def analyze_silence_ratio(y: np.ndarray, sr: int) -> Dict[str, Any]:
@@ -112,12 +96,7 @@ def analyze_silence_ratio(y: np.ndarray, sr: int) -> Dict[str, Any]:
         grade = "error"
         label = "말 막힘이 의심돼요"
 
-    return {
-        "silenceRatio": silence_ratio,
-        "silencePercent": round(silence_ratio * 100, 1),
-        "grade": grade,
-        "label": label
-    }
+    return {"silencePercent": round(silence_ratio * 100, 1), "grade": grade, "label": label}
 
 
 def analyze_voice(audio_path: str, stt_text: str = "") -> Dict[str, Any]:

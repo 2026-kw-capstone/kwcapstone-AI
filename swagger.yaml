@@ -1,0 +1,546 @@
+openapi: 3.0.3
+info:
+  title: AI Speech Pipeline API
+  description: |
+    성인 언어·조음 장애 재활을 위한 AI 기반 발화 훈련 시스템 API.
+
+    ## 인증
+    환경 변수 `COLAB_API_TOKEN`이 설정된 경우 모든 엔드포인트에 `x-api-token` 헤더가 필요합니다.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000
+    description: 로컬 개발 서버
+
+tags:
+  - name: health
+    description: 서버 상태 확인
+  - name: stt
+    description: 음성 → 텍스트 변환
+  - name: tts
+    description: 텍스트 → 음성 변환
+  - name: scenario
+    description: 훈련 시나리오 생성
+  - name: practice
+    description: 발화 연습 및 발음 평가
+  - name: chat
+    description: AI 자유 대화
+
+components:
+  securitySchemes:
+    ApiTokenHeader:
+      type: apiKey
+      in: header
+      name: x-api-token
+
+  schemas:
+    # ── 공통 에러 ──────────────────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+          example: "audio download failed"
+
+    # ── 음성 품질 분석 ──────────────────────────────────────────────────────────
+    VoiceAnalysis:
+      type: object
+      description: 음성 품질 종합 분석 결과
+      properties:
+        loudness:
+          type: object
+          description: |
+            음량 분석 — good: > -25 dBFS / warn: -35~-25 / error: < -35
+          properties:
+            avgDb:
+              type: number
+              format: float
+              description: 평균 음량 (dBFS)
+              example: -23.5
+            grade:
+              type: string
+              enum: [good, warn, error]
+              example: good
+            label:
+              type: string
+              example: "적절한 크기예요"
+        speechRate:
+          type: object
+          description: |
+            발화 속도 분석 — good: 3~6 음절/초 / warn: 2~3 또는 6~7.5 / error: 그 외
+          properties:
+            syllablesPerSecond:
+              type: number
+              format: float
+              description: 초당 음절 수
+              example: 4.2
+            grade:
+              type: string
+              enum: [good, warn, error]
+              example: good
+            label:
+              type: string
+              example: "적절한 속도예요"
+        silenceRatio:
+          type: object
+          description: |
+            침묵 비율 분석 — good: ≤25% / warn: 25~45% / error: >45% (말 막힘 의심)
+          properties:
+            silencePercent:
+              type: number
+              format: float
+              description: "침묵 비율 (%)"
+              example: 15.0
+            grade:
+              type: string
+              enum: [good, warn, error]
+              example: good
+            label:
+              type: string
+              example: "자연스러운 흐름이에요"
+
+    # ── 음절 분석 ───────────────────────────────────────────────────────────────
+    WordAnalysisItem:
+      type: object
+      description: 음절 단위 발음 평가 결과 (음절 카드 색깔 표시용)
+      properties:
+        refChar:
+          type: string
+          description: 참조 음절
+          example: "안"
+        hypChar:
+          type: string
+          description: "인식된 음절 (누락 시 빈 문자열)"
+          example: "안"
+        grade:
+          type: string
+          enum: [good, warn, error]
+          description: |
+            - good  : 완벽 일치
+            - warn  : 1~2개 음소 차이
+            - error : 3개 모두 다름 또는 누락
+          example: good
+
+    # ── 연습 응답 공통 필드 ─────────────────────────────────────────────────────
+    PracticeResponseBase:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        referenceText:
+          type: string
+          description: 평가 기준 텍스트
+          example: "안녕하세요"
+        sttText:
+          type: string
+          description: Whisper STT 인식 결과
+          example: "안녕하세요"
+        pronunciationScore:
+          type: number
+          format: float
+          description: "발음 정확도 (0~100, 음절별 초/중/종성 비교 평균)"
+          example: 85.5
+        meaningDeliveryScore:
+          type: number
+          format: float
+          description: "의미 전달률 (0~100)"
+          example: 78.3
+        feedback:
+          type: string
+          description: AI 맞춤 피드백
+          example: "받침이나 끝소리가 약하게 들린 부분이 있어요."
+        wordAnalysis:
+          type: array
+          description: 음절 단위 발음 평가 (음절 카드 표시용)
+          items:
+            $ref: '#/components/schemas/WordAnalysisItem'
+        voiceAnalysis:
+          $ref: '#/components/schemas/VoiceAnalysis'
+
+    # ── 시나리오 ────────────────────────────────────────────────────────────────
+    ScenarioStep:
+      type: object
+      properties:
+        step:
+          type: string
+          description: "단계 요약 (5~15자)"
+          example: "접수 요청하기"
+        assistantMessage:
+          type: string
+          description: AI가 사용자에게 하는 말
+          example: "안녕하세요, 어떻게 오셨나요?"
+        userIntent:
+          type: string
+          description: "훈련 안내 문구 (1문장)"
+          example: "진료 예약을 위해 왔다고 말해보세요."
+
+    ScenarioLevel:
+      type: object
+      properties:
+        levelTitle:
+          type: string
+          description: "난이도 제목 (5~15자)"
+          example: "병원 접수하기"
+        levelDescription:
+          type: string
+          description: 난이도 설명 (1~2문장)
+          example: "간단한 어휘로 병원 접수를 연습합니다."
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScenarioStep'
+          minItems: 3
+          maxItems: 3
+
+    # ── 채팅 히스토리 ────────────────────────────────────────────────────────────
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+          example: user
+        content:
+          type: string
+          example: "오늘 날씨가 좋네요"
+
+security:
+  - ApiTokenHeader: []
+  - {}
+
+paths:
+  # ────────────────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [health]
+      summary: 서버 상태 확인
+      security: []
+      responses:
+        '200':
+          description: 서버 정상
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  # ────────────────────────────────────────────────────────────────────────────
+  /stt:
+    post:
+      tags: [stt]
+      summary: 음성 → 텍스트 변환
+      description: S3 URL의 오디오 파일을 Whisper로 한국어 텍스트로 변환합니다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [s3Url]
+              properties:
+                s3Url:
+                  type: string
+                  example: "https://bucket.s3.amazonaws.com/audio/sample.wav"
+      responses:
+        '200':
+          description: 변환 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  sttText:
+                    type: string
+                    example: "안녕하세요 반갑습니다"
+        '401':
+          $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/schemas/ErrorResponse'
+
+  # ────────────────────────────────────────────────────────────────────────────
+  /tts:
+    post:
+      tags: [tts]
+      summary: 텍스트 → 음성 변환 (MP3)
+      description: |
+        텍스트를 OpenAI TTS-1로 MP3로 변환합니다.
+        사용 가능한 목소리: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  example: "안녕하세요"
+                voice:
+                  type: string
+                  enum: [alloy, echo, fable, onyx, nova, shimmer]
+                  default: nova
+                speed:
+                  type: number
+                  format: float
+                  minimum: 0.25
+                  maximum: 4.0
+                  default: 1.0
+      responses:
+        '200':
+          description: MP3 오디오 반환
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/schemas/ErrorResponse'
+
+  # ────────────────────────────────────────────────────────────────────────────
+  /generate-scenario:
+    post:
+      tags: [scenario]
+      summary: 훈련 시나리오 생성
+      description: |
+        GPT-4o-mini로 3레벨 × 3단계 = 9개의 훈련 단계를 생성합니다.
+        난이도: 쉬움 → 보통 → 어려움
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scenarioContext, goal]
+              properties:
+                scenarioContext:
+                  type: string
+                  example: "병원 접수"
+                goal:
+                  type: string
+                  example: "진료 예약 및 접수 완료하기"
+      responses:
+        '200':
+          description: 시나리오 생성 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      scenarioContext:
+                        type: string
+                        example: "병원 접수"
+                      goal:
+                        type: string
+                        example: "진료 예약 및 접수 완료하기"
+                      levels:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ScenarioLevel'
+                        minItems: 3
+                        maxItems: 3
+        '401':
+          $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/schemas/ErrorResponse'
+
+  # ────────────────────────────────────────────────────────────────────────────
+  /practice/reference:
+    post:
+      tags: [practice]
+      summary: 참조 텍스트 기반 발음 평가
+      description: |
+        사용자가 지정한 참조 텍스트와 발화를 비교하여 발음을 평가합니다.
+
+        **점수 항목:**
+        - `pronunciationScore` (발음 정확도): 음절별 초/중/종성 비교 평균
+        - `meaningDeliveryScore` (의미 전달률): CER 기반 `max(0, 100×(1−CER))`
+
+        **음절 점수 기준:**
+        | 음소 차이 수 | 등급 |
+        |---|---|
+        | 0개 (완벽) | good |
+        | 1~2개 차이 | warn |
+        | 3개 모두 다름 | error |
+        | 누락 | error |
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [s3Url, referenceText]
+              properties:
+                s3Url:
+                  type: string
+                  example: "https://bucket.s3.amazonaws.com/audio/sample.wav"
+                referenceText:
+                  type: string
+                  example: "안녕하세요"
+      responses:
+        '200':
+          description: 평가 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PracticeResponseBase'
+              example:
+                success: true
+                referenceText: "안녕하세요"
+                sttText: "안녕하세요"
+                pronunciationScore: 85.5
+                meaningDeliveryScore: 78.3
+                feedback: "받침이나 끝소리가 약하게 들린 부분이 있어요."
+                wordAnalysis:
+                  - refChar: "안"
+                    hypChar: "안"
+                    grade: good
+                  - refChar: "녕"
+                    hypChar: "녕"
+                    grade: good
+                voiceAnalysis:
+                  loudness:
+                    avgDb: -23.5
+                    grade: good
+                    label: "적절한 크기예요"
+                  speechRate:
+                    syllablesPerSecond: 4.2
+                    grade: good
+                    label: "적절한 속도예요"
+                  silenceRatio:
+                    silencePercent: 15.0
+                    grade: good
+                    label: "자연스러운 흐름이에요"
+        '401':
+          $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/schemas/ErrorResponse'
+
+  # ────────────────────────────────────────────────────────────────────────────
+  /practice/scenario:
+    post:
+      tags: [practice]
+      summary: 시나리오 맥락 기반 발음 평가
+      description: |
+        시나리오 맥락을 고려해 GPT-4o-mini가 참조 텍스트를 추론하고 발음을 평가합니다.
+
+        참조 텍스트 기반 평가와의 차이:
+        - 참조 텍스트를 LLM이 대화 맥락으로부터 추론
+        - `meaningDeliveryScore`는 CER 대신 LLM의 맥락 평가 (0~100)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [s3Url, levelTitle, step, assistantMessage, userIntent]
+              properties:
+                s3Url:
+                  type: string
+                  example: "https://bucket.s3.amazonaws.com/audio/sample.wav"
+                levelTitle:
+                  type: string
+                  example: "병원 접수하기"
+                step:
+                  type: string
+                  example: "접수 요청하기"
+                assistantMessage:
+                  type: string
+                  example: "안녕하세요, 어떻게 오셨나요?"
+                userIntent:
+                  type: string
+                  example: "진료 예약을 위해 왔다고 말해보세요."
+      responses:
+        '200':
+          description: 평가 성공
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PracticeResponseBase'
+                  - type: object
+                    properties:
+                      levelTitle:
+                        type: string
+                        example: "병원 접수하기"
+                      step:
+                        type: string
+                        example: "접수 요청하기"
+        '401':
+          $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/schemas/ErrorResponse'
+
+  # ────────────────────────────────────────────────────────────────────────────
+  /chat/free-talk:
+    post:
+      tags: [chat]
+      summary: AI 자유 대화
+      description: |
+        언어 장애인을 위한 격려 중심의 AI 자유 대화 기능입니다.
+        GPT-4o-mini 사용 (temperature: 0.8), 최근 3쌍의 대화 맥락 활용.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userMessage]
+              properties:
+                userMessage:
+                  type: string
+                  example: "오늘 날씨가 좋네요"
+                chatHistory:
+                  type: array
+                  description: "이전 대화 기록 (선택사항)"
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+      responses:
+        '200':
+          description: 응답 생성 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  mode:
+                    type: string
+                    example: free_talk
+                  userMessage:
+                    type: string
+                    example: "오늘 날씨가 좋네요"
+                  aiReply:
+                    type: string
+                    description: AI 대화 응답 (1~3문장)
+                    example: "정말 그렇네요! 맑은 날씨에 산책하기 좋겠어요."
+                  aiFeedback:
+                    type: string
+                    description: 짧은 긍정적 피드백 (1문장)
+                    example: "자연스럽게 잘 표현했어요!"
+                  assistantMessageForHistory:
+                    type: string
+                    description: 채팅 히스토리에 저장할 AI 메시지
+                    example: "정말 그렇네요! 맑은 날씨에 산책하기 좋겠어요."
+        '401':
+          $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/schemas/ErrorResponse'
