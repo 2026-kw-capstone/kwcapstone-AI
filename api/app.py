@@ -11,7 +11,7 @@ from services.stt_service import transcribe_audio
 from services.score_service import evaluate_reference_response, evaluate_scenario_response
 from services.chat_service import generate_free_talk_reply
 from services.tts_service import text_to_speech
-from services.voice_analysis_service import analyze_voice
+from services.voice_analysis_service import analyze_voice, analyze_syllable_voice
 
 app = FastAPI()
 
@@ -53,6 +53,10 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "nova"   # alloy | echo | fable | onyx | nova | shimmer
     speed: float = 1.0    # 0.25 ~ 4.0
+
+
+class SyllableVoiceRequest(BaseModel):
+    s3Url: str
 
 
 def validate_token(x_api_token: Optional[str]):
@@ -154,6 +158,27 @@ def free_talk(req: FreeTalkRequest, x_api_token: Optional[str] = Header(default=
             "aiReply": result["reply"],
             "aiFeedback": result["feedback"],
             "assistantMessageForHistory": result["assistant_message_for_history"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/practice/syllable-voice")
+def syllable_voice(req: SyllableVoiceRequest, x_api_token: Optional[str] = Header(default=None)):
+    validate_token(x_api_token)
+
+    raw_path = os.path.join(INPUT_DIR, "syllable_input_audio")
+    wav_path = os.path.join(OUTPUT_DIR, "syllable_input.wav")
+
+    try:
+        download_audio_from_s3(req.s3Url, raw_path)
+        preprocess_audio_to_mono_16k_wav(raw_path, wav_path)
+        result = analyze_syllable_voice(wav_path)
+
+        return {
+            "success": True,
+            "loudness": result["loudness"],
+            "vocalizationDuration": result["vocalizationDuration"]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

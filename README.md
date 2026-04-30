@@ -39,6 +39,11 @@ OpenAI Whisper STT, GPT-4o-mini LLM, TTS를 결합하여 시나리오 생성, �
 - 언어 장애 사용자를 배려한 따뜻한 말투의 대화 파트너 기능을 제공합니다.
 - 교정보다는 **자신감 향상**에 초점을 맞춘 응답 시스템입니다.
 
+### 7. 한 음절 발성 훈련 분석 (`voice_analysis_service`)
+- 한 음절 오디오를 분석하여 **음량**과 **발성 시간**을 각각 0~100점으로 산출합니다.
+- **음량 점수**: RMS 에너지 → dBFS 변환 후 선형 매핑 (-15 dBFS = 100점, -45 dBFS = 0점)
+- **발성 시간 점수**: 무음 구간 제거 후 실제 발성 시간 측정 (0~0.3초: 0~50점 / 0.3~2.0초: 50~100점 / 2.0초 이상: 100점)
+
 ---
 
 ## 📂 프로젝트 구조 (Project Structure)
@@ -128,6 +133,7 @@ python test_analysis.py --mode scenario
 | `POST` | `/generate-scenario` | 상황/목적에 따른 3단계 훈련 시나리오 생성 |
 | `POST` | `/practice/reference` | 목표 문장 기반 발음 정밀 분석 + 음성 품질 분석 |
 | `POST` | `/practice/scenario` | 시나리오 맥락 내 LLM 의도 추정 후 발음 평가 + 음성 품질 분석 |
+| `POST` | `/practice/syllable-voice` | 한 음절 오디오의 음량 + 발성 시간 점수 측정 |
 | `POST` | `/chat/free-talk` | AI 대화 파트너와의 격려형 자유 대화 |
 
 ---
@@ -165,13 +171,22 @@ $$\text{pronunciationScore} = \frac{1}{N} \sum_{i=1}^{N} \text{syllableScore}_i$
 - **Reference 모드**: CER 기반 → `max(0, 100 × (1 - CER))`
 - **Scenario 모드**: GPT-4o-mini가 시나리오 맥락과 STT 결과를 비교하여 0~100 평가
 
-### 음성 품질 분석 기준
+### 음성 품질 분석 기준 (`/practice/reference`, `/practice/scenario`)
 
 | 항목 | good | warn | error |
 |------|------|------|-------|
 | 음량 | > -25 dBFS | -35 ~ -25 | < -35 dBFS |
 | 발화 속도 | 3.0 ~ 6.0 음절/초 | 2.0 ~ 3.0 또는 6.0 ~ 7.5 | < 2.0 또는 > 7.5 |
 | 침묵 비율 | ≤ 25% | 25 ~ 45% | > 45% |
+
+### 한 음절 발성 분석 점수 기준 (`/practice/syllable-voice`)
+
+| 항목 | 측정 방식 | 100점 기준 |
+|------|----------|-----------|
+| 음량 | RMS → dBFS 선형 매핑 | -15 dBFS 이상 |
+| 발성 시간 | 무음 제거 후 발성 구간 합산 | 2.0초 이상 |
+
+등급은 두 항목 공통으로 `score ≥ 75` → good / `40~74` → warn / `< 40` → error 입니다.
 
 ---
 
