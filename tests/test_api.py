@@ -279,7 +279,8 @@ class TestReferencePracticeEndpoint:
     def _call(self, synthetic_wav, stt_text=MOCK_STT, ref_text="안녕하세요 반갑습니다"):
         with patch("api.app.download_audio_from_s3", side_effect=make_s3_mock(synthetic_wav)), \
              patch("api.app.preprocess_audio_to_mono_16k_wav", side_effect=_mock_preprocess), \
-             patch("api.app.transcribe_audio", return_value=stt_text):
+             patch("api.app.transcribe_audio", return_value=stt_text), \
+             patch("services.score_service._get_acoustic_text", return_value=None):
             return client.post(
                 "/practice/reference",
                 json={"s3Url": "https://mock.s3/audio.wav", "referenceText": ref_text},
@@ -351,7 +352,8 @@ class TestReferencePracticeEndpoint:
         """작은 음량 WAV → 음량 error."""
         with patch("api.app.download_audio_from_s3", side_effect=make_s3_mock(quiet_wav)), \
              patch("api.app.preprocess_audio_to_mono_16k_wav", side_effect=_mock_preprocess), \
-             patch("api.app.transcribe_audio", return_value="안녕"):
+             patch("api.app.transcribe_audio", return_value="안녕"), \
+             patch("services.score_service._get_acoustic_text", return_value=None):
             res = client.post(
                 "/practice/reference",
                 json={"s3Url": "https://mock.s3/audio.wav", "referenceText": "안녕"},

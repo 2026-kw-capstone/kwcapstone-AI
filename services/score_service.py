@@ -54,6 +54,131 @@ def decompose_hangul(char: str):
     }
 
 
+# ── G2P (Grapheme-to-Phoneme) ──────────────────────────────────────────────
+
+_g2p = None
+
+
+def _get_g2p():
+    global _g2p
+    if _g2p is None:
+        try:
+            from g2pk import G2p
+            _g2p = G2p()
+        except Exception:
+            pass
+    return _g2p
+
+
+def apply_g2p(text: str) -> str:
+    """한국어 텍스트에 음운 규칙 적용 (G2P)
+    - 닭이 → 달기 (연음화)
+    - 학교 → 학꾜 (경음화)
+    - 국민 → 궁민 (비음화)
+    g2pk 미설치·오류 시 원본 반환.
+    """
+    g2p = _get_g2p()
+    if g2p is None or not text.strip():
+        return text
+    try:
+        return g2p(text)
+    except Exception:
+        return text
+
+
+def text_to_phoneme_sequence(text: str) -> List[Dict[str, Any]]:
+    """텍스트(G2P 적용 후) → 음소 시퀀스 flat list
+    각 항목: {phoneme, syl_idx, position('initial'|'medial'|'final')}
+    종성 없는 음절은 초성+중성 2개만 포함.
+    """
+    seq = []
+    for syl_idx, char in enumerate(split_korean_chars(text)):
+        parts = decompose_hangul(char)
+        if parts is None:
+            seq.append({"phoneme": char, "syl_idx": syl_idx, "position": "initial"})
+            continue
+        seq.append({"phoneme": parts["initial"], "syl_idx": syl_idx, "position": "initial"})
+        seq.append({"phoneme": parts["medial"],  "syl_idx": syl_idx, "position": "medial"})
+        if parts["final"]:
+            seq.append({"phoneme": parts["final"], "syl_idx": syl_idx, "position": "final"})
+    return seq
+
+
+def build_phoneme_based_analysis(ref_text: str, hyp_text: str):
+    """G2P 음운 변환 + 음소 시퀀스 정렬 기반 발음 분석
+
+    처리 흐름:
+    1. 양측 텍스트에 G2P 적용 → 실제 발음 형태 획득
+    2. 음소 시퀀스로 분해 (초/중/종성 flat list)
+    3. SequenceMatcher로 음소 단위 정렬
+    4. ref 음절별 오류 음소 위치(position) 집계
+    5. 음절별 score/grade 산출 → word_analysis 반환 (원본 ref 음절 기준)
+
+    반환: (word_analysis, inserts, insert_feedbacks)
+    """
+    ref_chars = split_korean_chars(ref_text)
+    hyp_chars = split_korean_chars(hyp_text)
+
+    ref_g2p = apply_g2p(ref_text)
+    hyp_g2p = apply_g2p(hyp_text)
+
+    ref_phonemes = text_to_phoneme_sequence(ref_g2p)
+    hyp_phonemes = text_to_phoneme_sequence(hyp_g2p)
+
+    ref_seq = [p["phoneme"] for p in ref_phonemes]
+    hyp_seq = [p["phoneme"] for p in hyp_phonemes]
+
+    n_ref_syls = len(split_korean_chars(ref_g2p))
+    syl_err_positions: Dict[int, set] = {i: set() for i in range(n_ref_syls)}
+
+    inserts: List[str] = []
+    insert_feedbacks: List[str] = []
+
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, ref_seq, hyp_seq).get_opcodes():
+        if tag == "equal":
+            continue
+        if tag in ("replace", "delete"):
+            for ri in range(i1, i2):
+                ph = ref_phonemes[ri]
+                syl_err_positions[ph["syl_idx"]].add(ph["position"])
+        if tag == "insert":
+            for ji in range(j1, j2):
+                inserts.append(hyp_phonemes[ji]["phoneme"])
+                insert_feedbacks.append("불필요한 발음이 추가되었어요")
+
+    word_analysis = []
+    for syl_idx, ref_char in enumerate(ref_chars):
+        hyp_char = hyp_chars[syl_idx] if syl_idx < len(hyp_chars) else ""
+        err_positions = syl_err_positions.get(syl_idx, set())
+
+        if not hyp_char:
+            score, grade, error_type = 0, "error", "delete"
+            phoneme_diff = {"initial": "missing", "medial": "missing", "final": "missing"}
+        else:
+            diff_count = len(err_positions)
+            score = {0: 100, 1: 70, 2: 40}.get(diff_count, 10)
+            grade = "good" if score >= 100 else ("warn" if score >= 40 else "error")
+            error_type = "+".join(sorted(err_positions)) if err_positions else "equal"
+            phoneme_diff = {
+                pos: ("different" if pos in err_positions else "same")
+                for pos in ("initial", "medial", "final")
+            }
+
+        word_analysis.append({
+            "refIndex":    syl_idx,
+            "refChar":     ref_char,
+            "hypChar":     hyp_char,
+            "score":       score,
+            "grade":       grade,
+            "errorType":   error_type,
+            "refParts":    decompose_hangul(ref_char),
+            "hypParts":    decompose_hangul(hyp_char) if hyp_char else None,
+            "phonemeDiff": phoneme_diff,
+        })
+
+    return word_analysis, inserts, insert_feedbacks
+
+
 def analyze_syllable_difference(ref_char: str, hyp_char: str):
     ref_parts = decompose_hangul(ref_char)
     hyp_parts = decompose_hangul(hyp_char)
@@ -391,19 +516,43 @@ def evaluate_with_llm(step_content: str, stt_text: str):
     return json.loads(response.choices[0].message.content)
 
 
+def _get_acoustic_text(audio_path: Optional[str]) -> Optional[str]:
+    """wav2vec2 음향 인식 시도. 불가 시 None 반환."""
+    if not audio_path:
+        return None
+    try:
+        from services.phoneme_acoustic_service import acoustic_recognize
+        return acoustic_recognize(audio_path)
+    except Exception:
+        return None
+
+
 def evaluate_reference_response(
     reference_text: str,
     stt_text: str,
+    audio_path: Optional[str] = None,
     whisperx_words: Optional[List[Dict[str, Any]]] = None
 ):
+    """
+    참조 텍스트 기반 발음 평가.
+
+    audio_path 제공 시 wav2vec2 음향 인식(언어 모델 보정 없음)으로 발음 비교.
+    모델 미설치 또는 인식 실패 시 stt_text로 자동 fallback.
+
+    반환 acousticText:
+      - str  : wav2vec2가 인식한 텍스트 (이 값이 발음 점수 산출에 사용됨)
+      - None : 모델 없음 → stt_text 기준으로 점수 산출
+    """
     reference_text = reference_text.strip()
     stt_text = stt_text.strip()
 
-    reference_scores = calculate_reference_scores(reference_text, stt_text)
-    alignment_result = build_alignment(reference_text, stt_text)
+    acoustic_text = _get_acoustic_text(audio_path)
+    comparison_text = acoustic_text if acoustic_text else stt_text
 
-    word_analysis, inserts, insert_feedbacks = build_rule_based_analysis(
-        reference_text, alignment_result
+    reference_scores = calculate_reference_scores(reference_text, comparison_text)
+
+    word_analysis, inserts, insert_feedbacks = build_phoneme_based_analysis(
+        reference_text, comparison_text
     )
 
     word_analysis = attach_syllable_timestamps(
@@ -426,6 +575,7 @@ def evaluate_reference_response(
     return {
         "referenceText": reference_text,
         "sttText": stt_text,
+        "acousticText": acoustic_text,
         "pronunciationScore": round(float(avg_word_score), 2),
         "feedback": rule_feedback,
         "wordAnalysis": simplified_word_analysis,
@@ -435,18 +585,26 @@ def evaluate_reference_response(
 def evaluate_scenario_response(
     step_content: str,
     stt_text: str,
+    audio_path: Optional[str] = None,
     whisperx_words: Optional[List[Dict[str, Any]]] = None
 ):
+    """
+    시나리오 맥락 기반 발음 평가.
+
+    LLM이 추론한 참조 텍스트와 음향 인식 결과를 비교합니다.
+    acousticText 우선 사용, 실패 시 stt_text로 fallback.
+    """
     llm_result = evaluate_with_llm(step_content, stt_text)
 
     reference_text = llm_result.get("inferredReferenceText", "").strip()
     meaning_delivery_score = clamp(safe_int(llm_result.get("meaningDeliveryScore", 0), 0), 0, 100)
     llm_feedback = llm_result.get("feedback", "").strip()
 
-    alignment_result = build_alignment(reference_text, stt_text)
+    acoustic_text = _get_acoustic_text(audio_path)
+    comparison_text = acoustic_text if acoustic_text else stt_text
 
-    word_analysis, inserts, insert_feedbacks = build_rule_based_analysis(
-        reference_text, alignment_result
+    word_analysis, inserts, insert_feedbacks = build_phoneme_based_analysis(
+        reference_text, comparison_text
     )
 
     word_analysis = attach_syllable_timestamps(
@@ -471,6 +629,7 @@ def evaluate_scenario_response(
     return {
         "referenceText": reference_text,
         "sttText": stt_text,
+        "acousticText": acoustic_text,
         "pronunciationScore": round(float(avg_word_score), 2),
         "meaningDeliveryScore": meaning_delivery_score,
         "feedback": final_feedback,

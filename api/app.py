@@ -127,7 +127,8 @@ def practice_reference(req: ReferencePracticeRequest, x_api_token: Optional[str]
 
         eval_result = evaluate_reference_response(
             reference_text=req.referenceText,
-            stt_text=stt_text
+            stt_text=stt_text,
+            audio_path=wav_path
         )
 
         voice_result = analyze_voice(wav_path, stt_text)
@@ -197,7 +198,7 @@ def practice_scenario(req: ScenarioPracticeRequest, x_api_token: Optional[str] =
         stt_text = transcribe_audio(wav_path)
 
         step_content = f"AI 질문: {req.assistantMessage}\n사용자 연습 목표: {req.userIntent}"
-        eval_result = evaluate_scenario_response(step_content, stt_text)
+        eval_result = evaluate_scenario_response(step_content, stt_text, audio_path=wav_path)
 
         voice_result = analyze_voice(wav_path, stt_text)
 

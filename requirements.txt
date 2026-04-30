@@ -8,3 +8,7 @@ requests
 openai-whisper
 librosa
 numpy
+g2pk
+jamo
+konlpy
+transformers
