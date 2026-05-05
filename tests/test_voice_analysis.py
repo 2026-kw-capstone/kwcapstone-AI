@@ -110,13 +110,22 @@ class TestAnalyzeSilenceRatio:
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
         result = analyze_silence_ratio(y, sr)
 
-        assert set(result.keys()) == {"silencePercent", "grade", "label"}
+        assert set(result.keys()) == {"pausePercent", "grade", "label"}
 
     def test_percent_range(self, synthetic_wav):
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
         result = analyze_silence_ratio(y, sr)
 
-        assert 0.0 <= result["silencePercent"] <= 100.0
+        assert 0.0 <= result["pausePercent"] <= 100.0
+
+    def test_short_gap_not_counted(self):
+        """300ms 신호 + 100ms 침묵 + 300ms 신호 → gap < 250ms → pausePercent=0."""
+        sr = 16000
+        voiced = np.sin(2 * np.pi * 440 * np.arange(int(0.3 * sr)) / sr).astype(np.float32) * 0.3
+        silence = np.zeros(int(0.1 * sr), dtype=np.float32)
+        y = np.concatenate([voiced, silence, voiced])
+        result = analyze_silence_ratio(y, sr)
+        assert result["pausePercent"] == 0.0
 
     def test_grade_is_valid(self, synthetic_wav):
         y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
@@ -130,14 +139,14 @@ class TestAnalyzeSilenceRatio:
         result = analyze_silence_ratio(y, sr)
 
         assert result["grade"] in ("warn", "error")
-        assert result["silencePercent"] > 25
+        assert result["pausePercent"] > 25
 
     def test_fully_silent_audio(self):
         """완전 무음 신호도 예외 없이 처리."""
         y = np.zeros(16000, dtype=np.float32)
         result = analyze_silence_ratio(y, 16000)
 
-        assert set(result.keys()) == {"silencePercent", "grade", "label"}
+        assert set(result.keys()) == {"pausePercent", "grade", "label"}
         assert result["grade"] in ("good", "warn", "error")
 
 
@@ -153,7 +162,7 @@ class TestAnalyzeVoice:
     def test_all_subkeys(self, synthetic_wav):
         result = analyze_voice(synthetic_wav, "안녕하세요")
         assert set(result["speechRate"].keys()) == {"syllablesPerSecond", "score", "grade", "label"}
-        assert set(result["silenceRatio"].keys()) == {"silencePercent", "grade", "label"}
+        assert set(result["silenceRatio"].keys()) == {"pausePercent", "grade", "label"}
 
     def test_all_grades_are_valid(self, synthetic_wav):
         result = analyze_voice(synthetic_wav, "안녕하세요")

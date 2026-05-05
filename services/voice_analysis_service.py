@@ -54,33 +54,51 @@ def analyze_speech_rate(y: np.ndarray, sr: int, stt_text: str) -> Dict[str, Any]
 
 def analyze_silence_ratio(y: np.ndarray, sr: int) -> Dict[str, Any]:
     """
-    침묵 비율 분석 (무음 구간 / 전체 시간)
-    - good  : <= 25%  (자연스러운 흐름)
-    - warn  : 25 ~ 45% (쉬는 구간이 많음)
-    - error : > 45%   (말 막힘 의심)
-
-    top_db=35: 최대 에너지 대비 35dB 이상 낮은 구간을 무음으로 판단
+    Pause 비율 분석 — 임상적 유의 pause(≥ 250ms) 점유 비율
+    - good  : ≤ 25%
+    - warn  : 25~45%
+    - error : > 45%  (말 막힘 의심)
+    (Angelopoulou et al., Brain Sciences 2024; Barnett et al., 2020)
     """
+    PAUSE_MIN_SEC = 0.250  # 임상적 유의 pause 기준 (Angelopoulou et al., 2024)
+
     total_duration = len(y) / sr
+    if total_duration <= 0:
+        return {"pausePercent": 0.0, "grade": "good", "label": "자연스러운 흐름이에요"}
 
     intervals = librosa.effects.split(y, top_db=35)
-    speaking_duration = sum((end - start) / sr for start, end in intervals)
-    silence_duration = total_duration - speaking_duration
 
-    silence_ratio = silence_duration / total_duration if total_duration > 0 else 0.0
-    silence_ratio = round(max(0.0, min(1.0, silence_ratio)), 4)
+    if len(intervals) == 0:
+        pause_duration = total_duration
+    else:
+        pause_duration = 0.0
 
-    if silence_ratio <= 0.25:
+        leading = intervals[0][0] / sr
+        if leading >= PAUSE_MIN_SEC:
+            pause_duration += leading
+
+        for i in range(len(intervals) - 1):
+            gap = (intervals[i + 1][0] - intervals[i][1]) / sr
+            if gap >= PAUSE_MIN_SEC:
+                pause_duration += gap
+
+        trailing = (len(y) - intervals[-1][1]) / sr
+        if trailing >= PAUSE_MIN_SEC:
+            pause_duration += trailing
+
+    pause_ratio = round(max(0.0, min(1.0, pause_duration / total_duration)), 4)
+
+    if pause_ratio <= 0.25:
         grade = "good"
         label = "자연스러운 흐름이에요"
-    elif silence_ratio <= 0.45:
+    elif pause_ratio <= 0.45:
         grade = "warn"
         label = "쉬는 구간이 조금 많아요"
     else:
         grade = "error"
         label = "말 막힘이 의심돼요"
 
-    return {"silencePercent": round(silence_ratio * 100, 1), "grade": grade, "label": label}
+    return {"pausePercent": round(pause_ratio * 100, 1), "grade": grade, "label": label}
 
 
 def analyze_voice(audio_path: str, stt_text: str = "") -> Dict[str, Any]:

@@ -49,7 +49,7 @@ def print_voice_analysis(voice: dict):
 
     silence = voice.get("silenceRatio", {})
     sym = grade_symbol.get(silence.get("grade", ""), "?")
-    print(f"  ⏸ 침묵비율  : {silence.get('silencePercent', 'N/A')}%  {sym} {silence.get('label', '')}")
+    print(f"  ⏸ Pause비율 : {silence.get('pausePercent', 'N/A')}%  {sym} {silence.get('label', '')}")
 
 
 def print_result(result: dict, voice: dict = None):

@@ -124,12 +124,14 @@ components:
         silenceRatio:
           type: object
           description: |
-            침묵 비율 분석 — good: ≤25% / warn: 25~45% / error: >45% (말 막힘 의심)
+            Pause 비율 분석 — 임상적 유의 pause(≥ 250ms) 점유 비율
+            good: ≤25% / warn: 25~45% / error: >45% (말 막힘 의심)
+            (Angelopoulou et al., Brain Sciences 2024; Barnett et al., 2020)
           properties:
-            silencePercent:
+            pausePercent:
               type: number
               format: float
-              description: "침묵 비율 (%)"
+              description: "임상적 유의 pause(≥ 250ms) 비율 (%)"
               example: 15.0
             grade:
               type: string
@@ -525,7 +527,7 @@ paths:
                     grade: good
                     label: "적절한 속도예요"
                   silenceRatio:
-                    silencePercent: 15.0
+                    pausePercent: 15.0
                     grade: good
                     label: "자연스러운 흐름이에요"
         '401':
