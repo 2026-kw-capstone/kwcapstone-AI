@@ -100,16 +100,23 @@ components:
         speechRate:
           type: object
           description: |
-            발화 속도 분석 — good: 3~6 음절/초 / warn: 2~3 또는 6~7.5 / error: 그 외
+            조음속도 분석 (pause 제거 후 음절 수 ÷ 발화 시간)
+            good: 4.0–7.0 sps / slow: < 4.0 sps / fast: > 7.0 sps
+            점수: 5.2–5.9 sps → 100점 / 4.0·7.0 sps → 70점 / 0·9.0+ sps → 0점 (선형)
+            (Lee et al. 2017; Yoo et al. 2019; ASHA 2003)
           properties:
             syllablesPerSecond:
               type: number
               format: float
-              description: 초당 음절 수
-              example: 4.2
+              description: 조음속도 (음절/초, pause 제거 후)
+              example: 5.4
+            score:
+              type: integer
+              description: 발화 속도 점수 (0~100)
+              example: 98
             grade:
               type: string
-              enum: [good, warn, error]
+              enum: [good, slow, fast]
               example: good
             label:
               type: string
@@ -513,7 +520,8 @@ paths:
                     grade: good
                 voiceAnalysis:
                   speechRate:
-                    syllablesPerSecond: 4.2
+                    syllablesPerSecond: 5.4
+                    score: 98
                     grade: good
                     label: "적절한 속도예요"
                   silenceRatio:

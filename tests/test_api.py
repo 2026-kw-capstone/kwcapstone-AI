@@ -338,9 +338,10 @@ class TestReferencePracticeEndpoint:
 
     def test_voice_analysis_grades(self, synthetic_wav):
         voice = self._call(synthetic_wav).json()["voiceAnalysis"]
-        for key in ("speechRate", "silenceRatio"):
-            assert voice[key]["grade"] in ("good", "warn", "error")
-            assert "label" in voice[key]
+        assert voice["speechRate"]["grade"] in ("good", "slow", "fast")
+        assert "label" in voice["speechRate"]
+        assert voice["silenceRatio"]["grade"] in ("good", "warn", "error")
+        assert "label" in voice["silenceRatio"]
 
     def test_feedback_is_nonempty_string(self, synthetic_wav):
         feedback = self._call(synthetic_wav).json()["feedback"]
@@ -414,9 +415,10 @@ class TestScenarioPracticeEndpoint:
 
     def test_voice_analysis_grades(self, synthetic_wav):
         voice = self._call(synthetic_wav).json()["voiceAnalysis"]
-        for key in ("speechRate", "silenceRatio"):
-            assert voice[key]["grade"] in ("good", "warn", "error")
-            assert "label" in voice[key]
+        assert voice["speechRate"]["grade"] in ("good", "slow", "fast")
+        assert "label" in voice["speechRate"]
+        assert voice["silenceRatio"]["grade"] in ("good", "warn", "error")
+        assert "label" in voice["silenceRatio"]
 
     def test_word_analysis_is_list(self, synthetic_wav):
         assert isinstance(self._call(synthetic_wav).json()["wordAnalysis"], list)

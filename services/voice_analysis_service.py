@@ -10,37 +10,46 @@ def count_korean_syllables(text: str) -> int:
 
 def analyze_speech_rate(y: np.ndarray, sr: int, stt_text: str) -> Dict[str, Any]:
     """
-    발화 속도 분석 (음절/초)
-    한국어 정상 발화 속도: 4~6음절/초
-    - good  : 3.0 ~ 6.0 음절/초
-    - warn  : 2.0 ~ 3.0 또는 6.0 ~ 7.5
-    - error : < 2.0 또는 > 7.5
+    조음속도 분석 (pause 제거 후 음절 수 ÷ 발화 시간)
+    정상: 4.0–7.0 sps / slow: < 4.0 / fast: > 7.0
+    점수: 4.0·7.0 sps → 70점, 5.2–5.9 sps → 100점, 9.0+ sps / 0 sps → 0점
+    (Lee et al. 2017; Yoo et al. 2019; ASHA 2003)
     """
-    duration = librosa.get_duration(y=y, sr=sr)
     syllable_count = count_korean_syllables(stt_text)
 
-    if duration <= 0 or syllable_count == 0:
-        return {"syllablesPerSecond": 0.0, "grade": "error", "label": "측정 불가"}
+    if syllable_count == 0:
+        return {"syllablesPerSecond": 0.0, "score": 0, "grade": "slow", "label": "측정 불가"}
 
-    rate = round(syllable_count / duration, 2)
+    intervals = librosa.effects.split(y, top_db=35)
+    voiced_duration = sum((end - start) / sr for start, end in intervals)
 
-    if 3.0 <= rate <= 6.0:
+    if voiced_duration <= 0:
+        return {"syllablesPerSecond": 0.0, "score": 0, "grade": "slow", "label": "측정 불가"}
+
+    rate = round(syllable_count / voiced_duration, 2)
+
+    if rate < 4.0:
+        score = max(0, round(rate / 4.0 * 70))
+        grade = "slow"
+        label = "발화 속도가 느려요"
+    elif rate <= 5.2:
+        score = round(70 + (rate - 4.0) / 1.2 * 30)
         grade = "good"
         label = "적절한 속도예요"
-    elif 2.0 <= rate < 3.0:
-        grade = "warn"
-        label = "조금 느린 편이에요"
-    elif 6.0 < rate <= 7.5:
-        grade = "warn"
-        label = "조금 빠른 편이에요"
-    elif rate < 2.0:
-        grade = "error"
-        label = "너무 느린 편이에요"
+    elif rate <= 5.9:
+        score = 100
+        grade = "good"
+        label = "적절한 속도예요"
+    elif rate <= 7.0:
+        score = round(100 - (rate - 5.9) / 1.1 * 30)
+        grade = "good"
+        label = "적절한 속도예요"
     else:
-        grade = "error"
-        label = "너무 빠른 편이에요"
+        score = max(0, round(70 * (9.0 - rate) / 2.0))
+        grade = "fast"
+        label = "발화 속도가 빨라요"
 
-    return {"syllablesPerSecond": rate, "grade": grade, "label": label}
+    return {"syllablesPerSecond": rate, "score": score, "grade": grade, "label": label}
 
 
 def analyze_silence_ratio(y: np.ndarray, sr: int) -> Dict[str, Any]:
