@@ -115,47 +115,6 @@ def analyze_voice(audio_path: str, stt_text: str = "") -> Dict[str, Any]:
     }
 
 
-def analyze_vocalization_duration(y: np.ndarray, sr: int) -> Dict[str, Any]:
-    """
-    한 음절 발성 시간 분석 (무음 제거 후 실제 발성 구간 합산 → 0~100점)
-    0~0.3초: 0~50점 선형, 0.3~2.0초: 50~100점 선형, 2.0초 이상: 100점
-    """
-    intervals = librosa.effects.split(y, top_db=35)
-    voiced_duration = sum((end - start) / sr for start, end in intervals)
-
-    if voiced_duration <= 0:
-        score = 0
-    elif voiced_duration < 0.3:
-        score = round(voiced_duration / 0.3 * 50)
-    elif voiced_duration < 2.0:
-        score = round(50 + (voiced_duration - 0.3) / 1.7 * 50)
-    else:
-        score = 100
-
-    if score >= 75:
-        grade = "good"
-        label = "발성 시간이 충분해요"
-    elif score >= 40:
-        grade = "warn"
-        label = "조금 더 길게 발성해 보세요"
-    else:
-        grade = "error"
-        label = "발성 시간이 너무 짧아요"
-
-    return {"durationSeconds": round(voiced_duration, 3), "score": score, "grade": grade, "label": label}
-
-
-def analyze_syllable_voice(audio_path: str) -> Dict[str, Any]:
-    """
-    한 음절 오디오에 대한 음량 + 발성 시간 분석
-    audio_path: 전처리 완료된 mono 16k wav 경로
-    """
-    y, sr = librosa.load(audio_path, sr=None, mono=True)
-
-    return {
-        "vocalizationDuration": analyze_vocalization_duration(y, sr)
-    }
-
 
 # ── 단모음 발음 정확도 분석 ────────────────────────────────────────────────────
 
@@ -259,11 +218,10 @@ def analyze_vowel_pronunciation(y: np.ndarray, sr: int, target_vowel: str) -> Di
 
 def analyze_vowel_voice(audio_path: str, target_vowel: str) -> Dict[str, Any]:
     """
-    단모음 오디오에 대한 발음 정확도 + 발성 시간 분석.
+    단모음 오디오에 대한 발음 정확도 분석.
     audio_path: 전처리 완료된 mono 16k wav 경로
     """
     y, sr = librosa.load(audio_path, sr=None, mono=True)
     return {
         "pronunciation": analyze_vowel_pronunciation(y, sr, target_vowel),
-        "vocalizationDuration": analyze_vocalization_duration(y, sr),
     }

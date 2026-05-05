@@ -645,9 +645,8 @@ def generate_reference_feedback(
 def generate_vowel_feedback(
     target_vowel: str,
     pronunciation: Dict[str, Any],
-    duration: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """단모음 발음 정확도·발성 시간을 종합해 AI 피드백을 JSON으로 반환."""
+    """단모음 발음 정확도를 기반으로 AI 피드백을 JSON으로 반환."""
     system_prompt = """\
 너는 성인 언어 재활 보조 평가자야.
 단모음 연습 결과를 보고 피드백을 JSON으로만 반환해.
@@ -656,7 +655,7 @@ def generate_vowel_feedback(
 {"feedback": "<2문장>"}
 
 피드백 작성 규칙:
-- 발음 정확도(포먼트)와 발성 지속 시간을 함께 고려해
+- 발음 정확도(포먼트) 기준으로 평가해
 - 잘한 점 먼저, 개선점은 구체적으로 (입 모양, 혀 위치 등)
 - 따뜻하고 격려하는 톤, 2문장으로 짧게
 """
@@ -675,9 +674,6 @@ def generate_vowel_feedback(
 [발음 정확도]
 점수: {pronunciation.get("score", 0)}/100 / 등급: {pronunciation.get("grade", "")}
 {formant_info}
-
-[발성 지속 시간]
-점수: {duration.get("score", 0)}/100 / 등급: {duration.get("grade", "")}
 """
     response = client.chat.completions.create(
         model="gpt-4o-mini",

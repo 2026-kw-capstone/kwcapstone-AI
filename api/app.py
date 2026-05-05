@@ -11,7 +11,7 @@ from services.stt_service import transcribe_audio
 from services.score_service import evaluate_reference_response, evaluate_scenario_response, generate_vowel_feedback
 from services.chat_service import generate_free_talk_reply
 from services.tts_service import text_to_speech
-from services.voice_analysis_service import analyze_voice, analyze_syllable_voice, analyze_vowel_voice
+from services.voice_analysis_service import analyze_voice, analyze_vowel_voice
 
 app = FastAPI()
 
@@ -53,10 +53,6 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "nova"   # alloy | echo | fable | onyx | nova | shimmer
     speed: float = 1.0    # 0.25 ~ 4.0
-
-
-class SyllableVoiceRequest(BaseModel):
-    s3Url: str
 
 
 class VowelPracticeRequest(BaseModel):
@@ -170,26 +166,6 @@ def free_talk(req: FreeTalkRequest, x_api_token: Optional[str] = Header(default=
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/practice/syllable-voice")
-def syllable_voice(req: SyllableVoiceRequest, x_api_token: Optional[str] = Header(default=None)):
-    validate_token(x_api_token)
-
-    raw_path = os.path.join(INPUT_DIR, "syllable_input_audio")
-    wav_path = os.path.join(OUTPUT_DIR, "syllable_input.wav")
-
-    try:
-        download_audio_from_s3(req.s3Url, raw_path)
-        preprocess_audio_to_mono_16k_wav(raw_path, wav_path)
-        result = analyze_syllable_voice(wav_path)
-
-        return {
-            "success": True,
-            "vocalizationDuration": result["vocalizationDuration"]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/practice/vowel")
 def vowel_practice(req: VowelPracticeRequest, x_api_token: Optional[str] = Header(default=None)):
     validate_token(x_api_token)
@@ -203,12 +179,10 @@ def vowel_practice(req: VowelPracticeRequest, x_api_token: Optional[str] = Heade
 
         result = analyze_vowel_voice(wav_path, req.targetVowel)
         pronunciation = result["pronunciation"]
-        duration = result["vocalizationDuration"]
 
         llm_result = generate_vowel_feedback(
             target_vowel=req.targetVowel,
             pronunciation=pronunciation,
-            duration=duration,
         )
 
         return {
@@ -217,7 +191,6 @@ def vowel_practice(req: VowelPracticeRequest, x_api_token: Optional[str] = Heade
             "pronunciationScore": pronunciation["score"],
             "pronunciationGrade": pronunciation["grade"],
             "pronunciationLabel": pronunciation["label"],
-            "vocalizationDuration": duration,
             "feedback": llm_result.get("feedback", ""),
         }
     except Exception as e:

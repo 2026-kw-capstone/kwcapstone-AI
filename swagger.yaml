@@ -24,7 +24,7 @@ info:
 
     ## 인증
     환경 변수 `COLAB_API_TOKEN`이 설정된 경우 모든 엔드포인트에 `x-api-token` 헤더가 필요합니다.
-  version: 1.2.0
+  version: 1.3.0
 
 servers:
   - url: http://localhost:8000
@@ -59,38 +59,6 @@ components:
         detail:
           type: string
           example: "audio download failed"
-
-    # ── 한 음절 발성 분석 ──────────────────────────────────────────────────────
-    SyllableVoiceResponse:
-      type: object
-      description: 한 음절 오디오에 대한 발성 시간 점수
-      properties:
-        success:
-          type: boolean
-          example: true
-        vocalizationDuration:
-          type: object
-          description: |
-            발성 시간 점수 — 무음 제거 후 실제 발성 구간 합산
-            0~0.3초: 0~50점 / 0.3~2.0초: 50~100점 / 2.0초 이상: 100점
-            good: score ≥ 75 / warn: 40~74 / error: < 40
-          properties:
-            durationSeconds:
-              type: number
-              format: float
-              description: 실제 발성 시간 (초)
-              example: 0.84
-            score:
-              type: integer
-              description: 발성 시간 점수 (0~100)
-              example: 72
-            grade:
-              type: string
-              enum: [good, warn, error]
-              example: good
-            label:
-              type: string
-              example: "발성 시간이 충분해요"
 
     # ── 음성 품질 분석 ──────────────────────────────────────────────────────────
     VoiceAnalysis:
@@ -259,6 +227,38 @@ components:
             $ref: '#/components/schemas/WordAnalysisItem'
         voiceAnalysis:
           $ref: '#/components/schemas/VoiceAnalysis'
+
+    # ── 단모음 연습 응답 ─────────────────────────────────────────────────────────
+    VowelPracticeResponse:
+      type: object
+      description: 단모음 발음 정확도 + AI 피드백
+      properties:
+        success:
+          type: boolean
+          example: true
+        targetVowel:
+          type: string
+          description: 연습 대상 단모음
+          example: "아"
+        pronunciationScore:
+          type: integer
+          description: |
+            LPC 포먼트 기반 발음 정확도 (0~100).
+            F1 허용 오차 300Hz, F2 허용 오차 600Hz 기준 선형 감점:
+            score = max(0, 100 − |ΔF1|/3) × 0.5 + max(0, 100 − |ΔF2|/6) × 0.5
+          example: 82
+        pronunciationGrade:
+          type: string
+          enum: [good, warn, error]
+          description: "good: ≥75 / warn: 50~74 / error: <50"
+          example: good
+        pronunciationLabel:
+          type: string
+          example: "모음 발음이 정확해요"
+        feedback:
+          type: string
+          description: 발음 정확도 기반 AI 피드백 (2문장)
+          example: "아 모음 발음이 잘 됐어요. 입을 조금 더 크게 벌려 보세요."
 
     # ── 시나리오 ────────────────────────────────────────────────────────────────
     ScenarioStep:
@@ -583,51 +583,51 @@ paths:
           $ref: '#/components/schemas/ErrorResponse'
 
   # ────────────────────────────────────────────────────────────────────────────
-  /practice/syllable-voice:
+  /practice/vowel:
     post:
       tags: [practice]
-      summary: 한 음절 발성 시간 분석
+      summary: 단모음 발음 정확도 분석
       description: |
-        한 음절 오디오의 **발성 시간**을 측정하여 0~100점으로 반환합니다.
+        특정 단모음을 발성한 오디오를 **LPC 포먼트 분석**으로 평가하고 AI 피드백을 반환합니다.
 
-        **발성 시간 점수 기준 (무음 제거 후 실제 발성 구간 합산):**
-        | 발성 시간 | 점수 |
-        |---|---|
-        | 0 ~ 0.3초 | 0 ~ 50점 (선형) |
-        | 0.3 ~ 2.0초 | 50 ~ 100점 (선형) |
-        | 2.0초 이상 | 100점 |
+        지원 모음: `아`, `이`, `우`, `에`, `오`, `애`, `외`, `위`, `으`, `의`
 
-        **등급 기준 (두 항목 공통):**
-        | 점수 | 등급 |
-        |---|---|
-        | ≥ 75 | good |
-        | 40 ~ 74 | warn |
-        | < 40 | error |
+        **분석 방식:**
+        1. 가장 긴 유성 구간의 중간 60%를 안정 구간으로 추출 (onset/offset 제거)
+        2. LPC(선형 예측 코딩) + 루트 분석으로 F1·F2 포먼트 추정
+        3. 한국어 단모음 기준 포먼트와 비교:
+           `score = max(0, 100 − |ΔF1|/3) × 0.5 + max(0, 100 − |ΔF2|/6) × 0.5`
+        4. 발성 지속 시간 병렬 측정 (0~100점)
+        5. GPT-4o-mini로 발음 + 발성 시간 종합 피드백 생성
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [s3Url]
+              required: [s3Url, targetVowel]
               properties:
                 s3Url:
                   type: string
-                  example: "https://bucket.s3.amazonaws.com/audio/syllable.wav"
+                  example: "https://bucket.s3.amazonaws.com/audio/vowel.wav"
+                targetVowel:
+                  type: string
+                  enum: [아, 이, 우, 에, 오, 애, 외, 위, 으, 의]
+                  example: "아"
       responses:
         '200':
           description: 분석 성공
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SyllableVoiceResponse'
+                $ref: '#/components/schemas/VowelPracticeResponse'
               example:
                 success: true
-                vocalizationDuration:
-                  durationSeconds: 0.84
-                  score: 72
-                  grade: good
-                  label: "발성 시간이 충분해요"
+                targetVowel: "아"
+                pronunciationScore: 82
+                pronunciationGrade: good
+                pronunciationLabel: "모음 발음이 정확해요"
+                feedback: "아 모음 발음이 잘 됐어요. 입을 조금 더 크게 벌려 보세요."
         '401':
           $ref: '#/components/schemas/ErrorResponse'
         '500':

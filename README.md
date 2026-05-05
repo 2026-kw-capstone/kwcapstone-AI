@@ -1,7 +1,7 @@
 # 🎙️ AI Speech Pipeline for Communication Rehabilitation
 
 성인 의사소통 및 조음 장애 사용자의 재활을 돕기 위한 **AI 기반 언어 훈련 파이프라인**입니다.
-OpenAI Whisper STT, GPT-4o-mini LLM, TTS를 결합하여 시나리오 생성, 정교한 발음 평가, 음성 품질 분석, 격려 기반 자유 대화 기능을 제공합니다.
+OpenAI Whisper STT, GPT-4o-mini LLM, TTS를 결합하여 시나리오 생성, 정교한 발음 평가, 음성 품질 분석, 단모음 발음 정확도 분석, 격려 기반 자유 대화 기능을 제공합니다.
 
 ---
 
@@ -27,10 +27,9 @@ OpenAI Whisper STT, GPT-4o-mini LLM, TTS를 결합하여 시나리오 생성, �
 - **Scenario 모드**: LLM이 시나리오 맥락으로 의도 문장을 추정한 뒤, wav2vec2 결과와 동일한 G2P 음소 분석을 적용합니다.
 
 ### 3. 음성 품질 분석 (`voice_analysis_service`)
-- 실제 오디오 파일을 librosa로 분석하여 세 가지 음성 품질 지표를 제공합니다.
-- **음량**: RMS 에너지를 dBFS로 변환하여 목소리 크기의 적절성을 평가합니다.
-- **발화 속도**: 한글 음절 수를 발화 시간으로 나눠 음절/초를 산출합니다. (정상 범위: 3~6음절/초)
-- **침묵 비율**: 무음 구간 비율로 말 막힘 및 과도한 쉼을 감지합니다.
+- 실제 오디오 파일을 librosa로 분석하여 두 가지 음성 품질 지표를 제공합니다.
+- **조음 속도**: pause를 제거한 발화 시간 기준으로 음절/초를 산출합니다. (정상 범위: 4.0~7.0 sps, Lee et al. 2017; ASHA 2003)
+- **침묵 비율**: 임상적 유의 pause(≥ 250ms)만 집계하여 말 막힘 및 과도한 쉼을 감지합니다. (Angelopoulou et al., Brain Sciences 2024)
 
 ### 4. 음성 합성 TTS (`tts_service`)
 - OpenAI `tts-1` 모델(기본 음성: nova)을 사용해 목표 문장을 음성으로 변환합니다.
@@ -46,10 +45,10 @@ OpenAI Whisper STT, GPT-4o-mini LLM, TTS를 결합하여 시나리오 생성, �
 - 언어 장애 사용자를 배려한 따뜻한 말투의 대화 파트너 기능을 제공합니다.
 - 교정보다는 **자신감 향상**에 초점을 맞춘 응답 시스템입니다.
 
-### 7. 한 음절 발성 훈련 분석 (`voice_analysis_service`)
-- 한 음절 오디오를 분석하여 **음량**과 **발성 시간**을 각각 0~100점으로 산출합니다.
-- **음량 점수**: RMS 에너지 → dBFS 변환 후 선형 매핑 (-15 dBFS = 100점, -45 dBFS = 0점)
-- **발성 시간 점수**: 무음 구간 제거 후 실제 발성 시간 측정 (0~0.3초: 0~50점 / 0.3~2.0초: 50~100점 / 2.0초 이상: 100점)
+### 7. 단모음 발음 정확도 분석 (`voice_analysis_service`)
+- 한국어 단모음(`아`, `이`, `우`, `에`, `오`, `애`, `외`, `위`, `으`, `의`) 발음의 정확도를 **LPC 포먼트 분석**으로 평가합니다.
+- 가장 긴 유성 구간의 중간 60%를 안정 구간으로 추출하여 F1·F2 포먼트를 측정합니다.
+- 한국어 단모음 기준 포먼트와 비교하여 0~100점 산출합니다. (`score = max(0, 100 − |ΔF1|/3) × 0.5 + max(0, 100 − |ΔF2|/6) × 0.5`)
 
 ---
 
@@ -73,7 +72,7 @@ ai_speech_pipeline/
 │   ├── stt_service.py            # Whisper 기반 음성 인식 (의미 이해용)
 │   ├── phoneme_acoustic_service.py # wav2vec2 CTC 음향 인식 (발음 점수용)
 │   ├── score_service.py          # G2P + 음소 시퀀스 정렬 기반 발음 평가
-│   ├── voice_analysis_service.py # 음량/발화속도/침묵비율 음성 품질 분석
+│   ├── voice_analysis_service.py # 조음속도/침묵비율 음성 품질 분석 + 단모음 LPC 포먼트 분석
 │   ├── tts_service.py            # OpenAI TTS 음성 합성
 │   └── chat_service.py           # LLM 기반 자유 대화
 │
@@ -149,7 +148,7 @@ python test_analysis.py --mode scenario
 | `POST` | `/generate-scenario` | 상황/목적에 따른 3단계 훈련 시나리오 생성 |
 | `POST` | `/practice/reference` | 목표 문장 기반 발음 정밀 분석 + 음성 품질 분석 |
 | `POST` | `/practice/scenario` | 시나리오 맥락 내 LLM 의도 추정 후 발음 평가 + 음성 품질 분석 |
-| `POST` | `/practice/syllable-voice` | 한 음절 오디오의 음량 + 발성 시간 점수 측정 |
+| `POST` | `/practice/vowel` | 단모음 LPC 포먼트 기반 발음 정확도 분석 |
 | `POST` | `/chat/free-talk` | AI 대화 파트너와의 격려형 자유 대화 |
 
 ---
@@ -203,25 +202,22 @@ $$\text{pronunciationScore} = \frac{1}{N} \sum_{i=1}^{N} \text{syllableScore}_i$
 
 ### 의미 전달 점수 (meaningDeliveryScore)
 
-- **Reference 모드**: CER 기반 → `max(0, 100 × (1 - CER))`
-- **Scenario 모드**: GPT-4o-mini가 시나리오 맥락과 STT 결과를 비교하여 0~100 평가
+- **Scenario 모드 전용**: GPT-4o-mini가 시나리오 맥락과 STT 결과를 비교하여 0~100 평가
 
 ### 음성 품질 분석 기준 (`/practice/reference`, `/practice/scenario`)
 
-| 항목 | good | warn | error |
-|------|------|------|-------|
-| 음량 | > -25 dBFS | -35 ~ -25 | < -35 dBFS |
-| 발화 속도 | 3.0 ~ 6.0 음절/초 | 2.0 ~ 3.0 또는 6.0 ~ 7.5 | < 2.0 또는 > 7.5 |
-| 침묵 비율 | ≤ 25% | 25 ~ 45% | > 45% |
+| 항목 | 측정 방식 | good | warn | error |
+|------|----------|------|------|-------|
+| 조음 속도 | pause 제거 후 음절/초 | 4.0 ~ 7.0 sps | 4.0 미만 또는 7.0 초과 | 0 또는 9.0+ |
+| 침묵 비율 | ≥ 250ms pause 점유율 | ≤ 25% | 25 ~ 45% | > 45% |
 
-### 한 음절 발성 분석 점수 기준 (`/practice/syllable-voice`)
+### 단모음 발음 정확도 기준 (`/practice/vowel`)
 
-| 항목 | 측정 방식 | 100점 기준 |
-|------|----------|-----------|
-| 음량 | RMS → dBFS 선형 매핑 | -15 dBFS 이상 |
-| 발성 시간 | 무음 제거 후 발성 구간 합산 | 2.0초 이상 |
-
-등급은 두 항목 공통으로 `score ≥ 75` → good / `40~74` → warn / `< 40` → error 입니다.
+| 점수 | 등급 | 의미 |
+|------|------|------|
+| ≥ 75 | good | 모음 발음이 정확해요 |
+| 50 ~ 74 | warn | 모음 발음이 조금 어긋났어요 |
+| < 50 | error | 모음 발음을 다시 연습해보세요 |
 
 ---
 
