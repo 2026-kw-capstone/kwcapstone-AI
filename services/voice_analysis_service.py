@@ -1,6 +1,6 @@
 import librosa
 import numpy as np
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
 
 
 def count_korean_syllables(text: str) -> int:
@@ -154,4 +154,116 @@ def analyze_syllable_voice(audio_path: str) -> Dict[str, Any]:
 
     return {
         "vocalizationDuration": analyze_vocalization_duration(y, sr)
+    }
+
+
+# ── 단모음 발음 정확도 분석 ────────────────────────────────────────────────────
+
+# 한국어 단모음 기준 포먼트 (F1, F2) in Hz
+# 출처: 한국어 음성학 연구 (성인 평균치 기준)
+_KOREAN_VOWEL_FORMANTS: Dict[str, Tuple[float, float]] = {
+    "아": (780, 1230),
+    "이": (310, 2590),
+    "우": (335,  840),
+    "에": (500, 1870),
+    "오": (490,  890),
+    "애": (690, 1790),
+    "외": (510, 1590),
+    "위": (310, 2050),
+    "으": (460, 1280),
+    "의": (460, 1280),
+}
+
+
+def _extract_formants(y: np.ndarray, sr: int) -> Optional[Tuple[float, float]]:
+    """
+    LPC로 F1, F2 포먼트 추정.
+    최소 50ms 이상 신호가 필요하며, 실패 시 None 반환.
+    """
+    if len(y) < int(sr * 0.05):
+        return None
+    try:
+        # Pre-emphasis → 고주파 성분 강조
+        y_pre = np.append(y[0], y[1:] - 0.97 * y[:-1])
+        y_win = y_pre * np.hamming(len(y_pre))
+
+        order = int(2 + sr / 1000)  # 16kHz → order=18 (표준)
+        coeffs = librosa.lpc(y_win, order=order)
+        roots = np.roots(coeffs)
+
+        # 양의 허수부 루트만 유지 (양의 주파수)
+        roots = roots[np.imag(roots) >= 0]
+        angles = np.arctan2(np.imag(roots), np.real(roots))
+        freqs = sorted([a * sr / (2 * np.pi) for a in angles if a > 0])
+        freqs = [f for f in freqs if 50 < f < 5000]
+
+        return (freqs[0], freqs[1]) if len(freqs) >= 2 else None
+    except Exception:
+        return None
+
+
+def analyze_vowel_pronunciation(y: np.ndarray, sr: int, target_vowel: str) -> Dict[str, Any]:
+    """
+    단모음 발음 정확도 분석 (LPC 포먼트 기반, 0~100점)
+
+    F1 허용 오차 300Hz, F2 허용 오차 600Hz 기준 선형 감점:
+      score = max(0, 100 - |ΔF1|/3) × 0.5 + max(0, 100 - |ΔF2|/6) × 0.5
+    """
+    if target_vowel not in _KOREAN_VOWEL_FORMANTS:
+        return {
+            "score": 0, "grade": "error", "label": "지원하지 않는 모음이에요",
+            "measuredF1": None, "measuredF2": None,
+        }
+
+    ref_f1, ref_f2 = _KOREAN_VOWEL_FORMANTS[target_vowel]
+
+    intervals = librosa.effects.split(y, top_db=35)
+    if len(intervals) == 0:
+        return {
+            "score": 0, "grade": "error", "label": "발성이 감지되지 않았어요",
+            "measuredF1": None, "measuredF2": None,
+        }
+
+    # 가장 긴 유성 구간의 중간 60% 사용 (onset/offset 제거)
+    start, end = max(intervals, key=lambda x: x[1] - x[0])
+    n = end - start
+    seg_s = start + int(n * 0.2)
+    seg_e = start + int(n * 0.8)
+    y_stable = y[seg_s:seg_e] if seg_e > seg_s else y[start:end]
+
+    formants = _extract_formants(y_stable, sr)
+
+    if formants is None:
+        return {
+            "score": 50, "grade": "warn", "label": "포먼트 측정이 불안정해요",
+            "measuredF1": None, "measuredF2": None,
+        }
+
+    user_f1, user_f2 = formants
+    f1_score = max(0.0, 100 - abs(user_f1 - ref_f1) / 3)   # 300Hz → 0
+    f2_score = max(0.0, 100 - abs(user_f2 - ref_f2) / 6)   # 600Hz → 0
+    score = round(0.5 * f1_score + 0.5 * f2_score)
+
+    if score >= 75:
+        grade, label = "good",  "모음 발음이 정확해요"
+    elif score >= 50:
+        grade, label = "warn",  "모음 발음이 조금 어긋났어요"
+    else:
+        grade, label = "error", "모음 발음을 다시 연습해보세요"
+
+    return {
+        "score": score, "grade": grade, "label": label,
+        "measuredF1": round(user_f1), "measuredF2": round(user_f2),
+    }
+
+
+def analyze_vowel_voice(audio_path: str, target_vowel: str) -> Dict[str, Any]:
+    """
+    단모음 오디오에 대한 발음 정확도 + 발성 시간 분석.
+    audio_path: 전처리 완료된 mono 16k wav 경로
+    """
+    y, sr = librosa.load(audio_path, sr=None, mono=True)
+    return {
+        "pronunciation": analyze_vowel_pronunciation(y, sr, target_vowel),
+        "vocalizationDuration": analyze_vocalization_duration(y, sr),
     }

@@ -642,6 +642,55 @@ def generate_reference_feedback(
     return json.loads(response.choices[0].message.content)
 
 
+def generate_vowel_feedback(
+    target_vowel: str,
+    pronunciation: Dict[str, Any],
+    duration: Dict[str, Any],
+) -> Dict[str, Any]:
+    """단모음 발음 정확도·발성 시간을 종합해 AI 피드백을 JSON으로 반환."""
+    system_prompt = """\
+너는 성인 언어 재활 보조 평가자야.
+단모음 연습 결과를 보고 피드백을 JSON으로만 반환해.
+
+반환 형식:
+{"feedback": "<2문장>"}
+
+피드백 작성 규칙:
+- 발음 정확도(포먼트)와 발성 지속 시간을 함께 고려해
+- 잘한 점 먼저, 개선점은 구체적으로 (입 모양, 혀 위치 등)
+- 따뜻하고 격려하는 톤, 2문장으로 짧게
+"""
+    f1 = pronunciation.get("measuredF1")
+    f2 = pronunciation.get("measuredF2")
+    formant_info = (
+        f"측정된 포먼트: F1={f1}Hz, F2={f2}Hz"
+        if f1 is not None and f2 is not None
+        else "포먼트 측정 불안정"
+    )
+
+    user_prompt = f"""\
+[목표 모음]
+{target_vowel}
+
+[발음 정확도]
+점수: {pronunciation.get("score", 0)}/100 / 등급: {pronunciation.get("grade", "")}
+{formant_info}
+
+[발성 지속 시간]
+점수: {duration.get("score", 0)}/100 / 등급: {duration.get("grade", "")}
+"""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.3,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+    return json.loads(response.choices[0].message.content)
+
+
 def _get_acoustic_text(audio_path: Optional[str]) -> Optional[str]:
     """wav2vec2 음향 인식 시도. 불가 시 None 반환."""
     if not audio_path:

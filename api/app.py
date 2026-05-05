@@ -8,10 +8,10 @@ from config.settings import COLAB_API_TOKEN
 from services.scenario_service import generate_scenario_levels
 from services.audio_service import download_audio_from_s3, preprocess_audio_to_mono_16k_wav
 from services.stt_service import transcribe_audio
-from services.score_service import evaluate_reference_response, evaluate_scenario_response
+from services.score_service import evaluate_reference_response, evaluate_scenario_response, generate_vowel_feedback
 from services.chat_service import generate_free_talk_reply
 from services.tts_service import text_to_speech
-from services.voice_analysis_service import analyze_voice, analyze_syllable_voice
+from services.voice_analysis_service import analyze_voice, analyze_syllable_voice, analyze_vowel_voice
 
 app = FastAPI()
 
@@ -57,6 +57,11 @@ class TTSRequest(BaseModel):
 
 class SyllableVoiceRequest(BaseModel):
     s3Url: str
+
+
+class VowelPracticeRequest(BaseModel):
+    s3Url: str
+    targetVowel: str  # "아" | "이" | "우" | "에" | "오" | "애" | "외" | "위" | "으" | "의"
 
 
 def validate_token(x_api_token: Optional[str]):
@@ -180,6 +185,40 @@ def syllable_voice(req: SyllableVoiceRequest, x_api_token: Optional[str] = Heade
         return {
             "success": True,
             "vocalizationDuration": result["vocalizationDuration"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/practice/vowel")
+def vowel_practice(req: VowelPracticeRequest, x_api_token: Optional[str] = Header(default=None)):
+    validate_token(x_api_token)
+
+    raw_path = os.path.join(INPUT_DIR, "vowel_input_audio")
+    wav_path = os.path.join(OUTPUT_DIR, "vowel_input.wav")
+
+    try:
+        download_audio_from_s3(req.s3Url, raw_path)
+        preprocess_audio_to_mono_16k_wav(raw_path, wav_path)
+
+        result = analyze_vowel_voice(wav_path, req.targetVowel)
+        pronunciation = result["pronunciation"]
+        duration = result["vocalizationDuration"]
+
+        llm_result = generate_vowel_feedback(
+            target_vowel=req.targetVowel,
+            pronunciation=pronunciation,
+            duration=duration,
+        )
+
+        return {
+            "success": True,
+            "targetVowel": req.targetVowel,
+            "pronunciationScore": pronunciation["score"],
+            "pronunciationGrade": pronunciation["grade"],
+            "pronunciationLabel": pronunciation["label"],
+            "vocalizationDuration": duration,
+            "feedback": llm_result.get("feedback", ""),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
