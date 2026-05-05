@@ -196,10 +196,14 @@ def practice_scenario(req: ScenarioPracticeRequest, x_api_token: Optional[str] =
         preprocess_audio_to_mono_16k_wav(raw_path, wav_path)
         stt_text = transcribe_audio(wav_path)
 
-        step_content = f"AI 질문: {req.assistantMessage}\n사용자 연습 목표: {req.userIntent}"
-        eval_result = evaluate_scenario_response(step_content, stt_text, audio_path=wav_path)
-
         voice_result = analyze_voice(wav_path, stt_text)
+
+        step_content = f"AI 질문: {req.assistantMessage}\n사용자 연습 목표: {req.userIntent}"
+        eval_result = evaluate_scenario_response(
+            step_content, stt_text,
+            audio_path=wav_path,
+            voice_result=voice_result,
+        )
 
         return {
             "success": True,

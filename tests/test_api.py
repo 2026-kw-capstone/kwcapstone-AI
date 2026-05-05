@@ -75,10 +75,11 @@ MOCK_SCENARIO = {
     ],
 }
 
-MOCK_SCENARIO_EVAL = {
-    "inferredReferenceText": "진료 예약을 하러 왔어요",
+MOCK_INFER_REFERENCE = "진료 예약을 하러 왔어요"
+
+MOCK_SCENARIO_FEEDBACK = {
     "meaningDeliveryScore": 85,
-    "feedback": "자연스럽게 잘 전달했어요.",
+    "feedback": "의도가 잘 전달됐어요. 조음 속도가 자연스러워요.",
 }
 
 MOCK_FREE_TALK = {
@@ -381,7 +382,8 @@ class TestScenarioPracticeEndpoint:
         with patch("api.app.download_audio_from_s3", side_effect=make_s3_mock(synthetic_wav)), \
              patch("api.app.preprocess_audio_to_mono_16k_wav", side_effect=_mock_preprocess), \
              patch("api.app.transcribe_audio", return_value=stt_text), \
-             patch("services.score_service.evaluate_with_llm", return_value=MOCK_SCENARIO_EVAL):
+             patch("services.score_service.infer_reference_text", return_value=MOCK_INFER_REFERENCE), \
+             patch("services.score_service.generate_scenario_feedback", return_value=MOCK_SCENARIO_FEEDBACK):
             return client.post("/practice/scenario", json=data)
 
     def test_success_flag(self, synthetic_wav):
@@ -432,7 +434,7 @@ class TestScenarioPracticeEndpoint:
         assert res.status_code == 422
 
     def test_llm_meaning_score_used(self, synthetic_wav):
-        """MOCK_SCENARIO_EVAL의 meaningDeliveryScore=85 가 그대로 반환되는지 확인."""
+        """MOCK_SCENARIO_FEEDBACK의 meaningDeliveryScore=85 가 그대로 반환되는지 확인."""
         data = self._call(synthetic_wav).json()
         assert data["meaningDeliveryScore"] == 85
 

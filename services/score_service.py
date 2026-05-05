@@ -476,43 +476,111 @@ def attach_syllable_timestamps(
     return word_analysis
 
 
-def evaluate_with_llm(step_content: str, stt_text: str):
-    system_prompt = """
-너는 성인 언어 재활 보조 평가자임.
-
-사용자의 발화(STT 결과)를 보고 아래만 평가해야 함.
-1. 사용자가 말하려던 의도 문장 추정
-2. step 내용과 비교했을 때 의미 전달률(0~100)
-3. 전체 발화에 대한 짧은 피드백
-
-반드시 JSON만 반환해야 함.
-
-반환 형식:
-{
-  "inferredReferenceText": "...",
-  "meaningDeliveryScore": 0,
-  "feedback": "..."
-}
-"""
-
-    user_prompt = f"""
-[원래 연습 목표 문장/상황]
-{step_content}
-
-[사용자 STT 결과]
-{stt_text}
-"""
-
+def infer_reference_text(step_content: str, stt_text: str) -> str:
+    """연습 맥락과 STT 결과를 보고 사용자 의도 문장을 추정."""
+    system_prompt = (
+        "너는 언어 재활 평가 보조자야.\n"
+        "연습 맥락과 STT 결과를 보고 사용자가 말하려 했던 한국어 문장을 한 문장으로 추정해.\n"
+        "반드시 JSON으로만 응답해.\n"
+        '{"inferredReferenceText": "..."}'
+    )
+    user_prompt = f"[연습 맥락]\n{step_content}\n\n[STT 결과]\n{stt_text}"
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        temperature=0.2,
+        temperature=0.1,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ]
     )
+    result = json.loads(response.choices[0].message.content)
+    return result.get("inferredReferenceText", "").strip()
 
+
+def build_pronunciation_error_for_llm(
+    word_analysis: List[Dict[str, Any]],
+    insert_feedbacks: List[str],
+) -> str:
+    """LLM에 전달할 발음 오류 요약 텍스트 생성."""
+    _TYPE_LABEL = {
+        "delete":                 "음절 누락",
+        "initial":                "초성 오류",
+        "medial":                 "모음 오류",
+        "final":                  "받침 오류",
+        "initial+medial":         "초성·모음 오류",
+        "initial+final":          "초성·받침 오류",
+        "medial+final":           "모음·받침 오류",
+        "initial+medial+final":   "초성·모음·받침 오류",
+    }
+    lines = []
+    for item in word_analysis:
+        if item["grade"] != "good":
+            ref = item["refChar"]
+            hyp = item["hypChar"] or "(누락)"
+            label = _TYPE_LABEL.get(item.get("errorType", ""), "오류")
+            lines.append(f'"{ref}" → "{hyp}" ({label})')
+    if insert_feedbacks:
+        lines.append(f"삽입 음절: {', '.join(insert_feedbacks)}")
+    return "\n".join(lines) if lines else "오류 없음"
+
+
+def generate_scenario_feedback(
+    step_content: str,
+    stt_text: str,
+    pronunciation_error_summary: str,
+    speech_rate: Dict[str, Any],
+    pause_ratio: Dict[str, Any],
+) -> Dict[str, Any]:
+    """발음 오류·음성 분석·연습 맥락을 종합해 의미 전달률과 피드백을 JSON으로 반환."""
+    system_prompt = """\
+너는 성인 언어 재활 보조 평가자야.
+아래 정보를 종합해서 의미 전달률과 피드백을 JSON으로만 반환해.
+
+반환 형식:
+{
+  "meaningDeliveryScore": <0~100 정수>,
+  "feedback": "<2~3문장>"
+}
+
+피드백 작성 규칙:
+- 의미 전달 여부 + 발음 오류 + 조음 속도/pause 비율을 함께 고려해
+- 잘한 점 먼저, 개선점은 구체적으로 뒤에
+- 따뜻하고 격려하는 톤, 2~3문장으로 짧게
+"""
+    sps        = speech_rate.get("syllablesPerSecond", 0)
+    sr_grade   = speech_rate.get("grade", "")
+    sr_score   = speech_rate.get("score", 0)
+    pause_pct  = pause_ratio.get("pausePercent", 0)
+    pause_grade = pause_ratio.get("grade", "")
+
+    user_prompt = f"""\
+[연습 맥락]
+{step_content}
+
+[STT 결과]
+{stt_text}
+
+[발음 오류 분석]
+{pronunciation_error_summary}
+
+[조음 속도]
+{sps} sps / 점수 {sr_score}/100 / 등급 {sr_grade}
+(기준: 4.0–7.0 sps 정상 | slow: 느림 | fast: 빠름)
+
+[침묵(Pause) 비율]
+{pause_pct}% / 등급 {pause_grade}
+(기준: ≤25% 정상 | warn: 쉬는 구간 많음 | error: 말 막힘 의심)
+"""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.3,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
     return json.loads(response.choices[0].message.content)
 
 
@@ -586,40 +654,51 @@ def evaluate_scenario_response(
     step_content: str,
     stt_text: str,
     audio_path: Optional[str] = None,
+    voice_result: Optional[Dict[str, Any]] = None,
     whisperx_words: Optional[List[Dict[str, Any]]] = None
 ):
     """
     시나리오 맥락 기반 발음 평가.
 
-    LLM이 추론한 참조 텍스트와 음향 인식 결과를 비교합니다.
-    acousticText 우선 사용, 실패 시 stt_text로 fallback.
+    1. LLM으로 참조 텍스트 추론
+    2. G2P 음소 분석으로 발음 점수·오류 산출
+    3. LLM에 발음 오류 분석 + 연습 맥락 + 음성 분석을 전달해 피드백 생성
     """
-    llm_result = evaluate_with_llm(step_content, stt_text)
+    # ── Step 1: 참조 텍스트 추론 ───────────────────────────────────────────────
+    reference_text = infer_reference_text(step_content, stt_text)
 
-    reference_text = llm_result.get("inferredReferenceText", "").strip()
-    meaning_delivery_score = clamp(safe_int(llm_result.get("meaningDeliveryScore", 0), 0), 0, 100)
-    llm_feedback = llm_result.get("feedback", "").strip()
-
+    # ── Step 2: G2P 발음 분석 ─────────────────────────────────────────────────
     acoustic_text = _get_acoustic_text(audio_path)
     comparison_text = acoustic_text if acoustic_text else stt_text
 
     word_analysis, inserts, insert_feedbacks = build_phoneme_based_analysis(
         reference_text, comparison_text
     )
-
     word_analysis = attach_syllable_timestamps(
         word_analysis=word_analysis,
         reference_text=reference_text,
         whisperx_words=whisperx_words
     )
 
-    rule_feedback = build_overall_rule_feedback(word_analysis, insert_feedbacks)
-
     avg_word_score = round(
         sum(item["score"] for item in word_analysis) / len(word_analysis), 2
     ) if word_analysis else 0.0
 
-    final_feedback = f"{llm_feedback} {rule_feedback}".strip() if llm_feedback else rule_feedback
+    # ── Step 3: LLM 피드백 (발음 오류 + 음성 분석 포함) ─────────────────────
+    pronunciation_error_summary = build_pronunciation_error_for_llm(word_analysis, insert_feedbacks)
+    speech_rate = (voice_result or {}).get("speechRate", {})
+    pause_ratio = (voice_result or {}).get("silenceRatio", {})
+
+    llm_result = generate_scenario_feedback(
+        step_content=step_content,
+        stt_text=stt_text,
+        pronunciation_error_summary=pronunciation_error_summary,
+        speech_rate=speech_rate,
+        pause_ratio=pause_ratio,
+    )
+
+    meaning_delivery_score = clamp(safe_int(llm_result.get("meaningDeliveryScore", 0), 0), 0, 100)
+    feedback = llm_result.get("feedback", "").strip()
 
     simplified_word_analysis = [
         {"refChar": item["refChar"], "hypChar": item["hypChar"], "grade": item["grade"]}
@@ -632,6 +711,6 @@ def evaluate_scenario_response(
         "acousticText": acoustic_text,
         "pronunciationScore": round(float(avg_word_score), 2),
         "meaningDeliveryScore": meaning_delivery_score,
-        "feedback": final_feedback,
+        "feedback": feedback,
         "wordAnalysis": simplified_word_analysis,
     }
