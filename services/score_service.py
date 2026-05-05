@@ -584,6 +584,64 @@ def generate_scenario_feedback(
     return json.loads(response.choices[0].message.content)
 
 
+def generate_reference_feedback(
+    reference_text: str,
+    stt_text: str,
+    pronunciation_error_summary: str,
+    speech_rate: Dict[str, Any],
+    pause_ratio: Dict[str, Any],
+) -> Dict[str, Any]:
+    """발음 오류·음성 분석을 종합해 reference 연습용 피드백을 JSON으로 반환."""
+    system_prompt = """\
+너는 성인 언어 재활 보조 평가자야.
+아래 정보를 종합해서 피드백을 JSON으로만 반환해.
+
+반환 형식:
+{
+  "feedback": "<2~3문장>"
+}
+
+피드백 작성 규칙:
+- 발음 오류 위치와 유형 + 조음 속도 + pause 비율을 함께 고려해
+- 잘한 점 먼저, 개선점은 구체적으로 뒤에
+- 따뜻하고 격려하는 톤, 2~3문장으로 짧게
+"""
+    sps         = speech_rate.get("syllablesPerSecond", 0)
+    sr_grade    = speech_rate.get("grade", "")
+    sr_score    = speech_rate.get("score", 0)
+    pause_pct   = pause_ratio.get("pausePercent", 0)
+    pause_grade = pause_ratio.get("grade", "")
+
+    user_prompt = f"""\
+[목표 문장]
+{reference_text}
+
+[STT 결과]
+{stt_text}
+
+[발음 오류 분석]
+{pronunciation_error_summary}
+
+[조음 속도]
+{sps} sps / 점수 {sr_score}/100 / 등급 {sr_grade}
+(기준: 4.0–7.0 sps 정상 | slow: 느림 | fast: 빠름)
+
+[침묵(Pause) 비율]
+{pause_pct}% / 등급 {pause_grade}
+(기준: ≤25% 정상 | warn: 쉬는 구간 많음 | error: 말 막힘 의심)
+"""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.3,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+    return json.loads(response.choices[0].message.content)
+
+
 def _get_acoustic_text(audio_path: Optional[str]) -> Optional[str]:
     """wav2vec2 음향 인식 시도. 불가 시 None 반환."""
     if not audio_path:
@@ -599,41 +657,49 @@ def evaluate_reference_response(
     reference_text: str,
     stt_text: str,
     audio_path: Optional[str] = None,
+    voice_result: Optional[Dict[str, Any]] = None,
     whisperx_words: Optional[List[Dict[str, Any]]] = None
 ):
     """
     참조 텍스트 기반 발음 평가.
 
-    audio_path 제공 시 wav2vec2 음향 인식(언어 모델 보정 없음)으로 발음 비교.
-    모델 미설치 또는 인식 실패 시 stt_text로 자동 fallback.
-
-    반환 acousticText:
-      - str  : wav2vec2가 인식한 텍스트 (이 값이 발음 점수 산출에 사용됨)
-      - None : 모델 없음 → stt_text 기준으로 점수 산출
+    1. wav2vec2 음향 인식으로 발음 비교 (미설치 시 stt_text fallback)
+    2. G2P 음소 분석으로 발음 점수·오류 산출
+    3. LLM에 발음 오류 분석 + 음성 분석을 전달해 피드백 생성
     """
     reference_text = reference_text.strip()
     stt_text = stt_text.strip()
 
+    # ── Step 1: G2P 발음 분석 ─────────────────────────────────────────────────
     acoustic_text = _get_acoustic_text(audio_path)
     comparison_text = acoustic_text if acoustic_text else stt_text
-
-    reference_scores = calculate_reference_scores(reference_text, comparison_text)
 
     word_analysis, inserts, insert_feedbacks = build_phoneme_based_analysis(
         reference_text, comparison_text
     )
-
     word_analysis = attach_syllable_timestamps(
         word_analysis=word_analysis,
         reference_text=reference_text,
         whisperx_words=whisperx_words
     )
 
-    rule_feedback = build_overall_rule_feedback(word_analysis, insert_feedbacks)
-
     avg_word_score = round(
         sum(item["score"] for item in word_analysis) / len(word_analysis), 2
     ) if word_analysis else 0.0
+
+    # ── Step 2: LLM 피드백 (발음 오류 + 음성 분석 포함) ─────────────────────
+    pronunciation_error_summary = build_pronunciation_error_for_llm(word_analysis, insert_feedbacks)
+    speech_rate = (voice_result or {}).get("speechRate", {})
+    pause_ratio = (voice_result or {}).get("silenceRatio", {})
+
+    llm_result = generate_reference_feedback(
+        reference_text=reference_text,
+        stt_text=stt_text,
+        pronunciation_error_summary=pronunciation_error_summary,
+        speech_rate=speech_rate,
+        pause_ratio=pause_ratio,
+    )
+    feedback = llm_result.get("feedback", "").strip()
 
     simplified_word_analysis = [
         {"refChar": item["refChar"], "hypChar": item["hypChar"], "grade": item["grade"]}
@@ -645,7 +711,7 @@ def evaluate_reference_response(
         "sttText": stt_text,
         "acousticText": acoustic_text,
         "pronunciationScore": round(float(avg_word_score), 2),
-        "feedback": rule_feedback,
+        "feedback": feedback,
         "wordAnalysis": simplified_word_analysis,
     }
 

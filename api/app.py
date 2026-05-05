@@ -125,13 +125,14 @@ def practice_reference(req: ReferencePracticeRequest, x_api_token: Optional[str]
         preprocess_audio_to_mono_16k_wav(raw_path, wav_path)
         stt_text = transcribe_audio(wav_path)
 
+        voice_result = analyze_voice(wav_path, stt_text)
+
         eval_result = evaluate_reference_response(
             reference_text=req.referenceText,
             stt_text=stt_text,
-            audio_path=wav_path
+            audio_path=wav_path,
+            voice_result=voice_result,
         )
-
-        voice_result = analyze_voice(wav_path, stt_text)
 
         return {
             "success": True,

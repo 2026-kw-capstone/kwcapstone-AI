@@ -75,6 +75,10 @@ MOCK_SCENARIO = {
     ],
 }
 
+MOCK_REFERENCE_FEEDBACK = {
+    "feedback": "질문 시작이 자연스럽습니다. 문장 끝을 조금 더 또렷하게 말해보세요.",
+}
+
 MOCK_INFER_REFERENCE = "진료 예약을 하러 왔어요"
 
 MOCK_SCENARIO_FEEDBACK = {
@@ -281,7 +285,8 @@ class TestReferencePracticeEndpoint:
         with patch("api.app.download_audio_from_s3", side_effect=make_s3_mock(synthetic_wav)), \
              patch("api.app.preprocess_audio_to_mono_16k_wav", side_effect=_mock_preprocess), \
              patch("api.app.transcribe_audio", return_value=stt_text), \
-             patch("services.score_service._get_acoustic_text", return_value=None):
+             patch("services.score_service._get_acoustic_text", return_value=None), \
+             patch("services.score_service.generate_reference_feedback", return_value=MOCK_REFERENCE_FEEDBACK):
             return client.post(
                 "/practice/reference",
                 json={"s3Url": "https://mock.s3/audio.wav", "referenceText": ref_text},
