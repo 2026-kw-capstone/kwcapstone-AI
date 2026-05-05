@@ -43,10 +43,6 @@ def print_voice_analysis(voice: dict):
     grade_symbol = {"good": "✅", "warn": "⚠️", "error": "❌"}
     print("\n  [음성 분석]")
 
-    loudness = voice.get("loudness", {})
-    sym = grade_symbol.get(loudness.get("grade", ""), "?")
-    print(f"  🔊 음량      : {loudness.get('avgDb', 'N/A')} dBFS  {sym} {loudness.get('label', '')}")
-
     rate = voice.get("speechRate", {})
     sym = grade_symbol.get(rate.get("grade", ""), "?")
     print(f"  ⚡ 발화속도  : {rate.get('syllablesPerSecond', 'N/A')} 음절/초  ({rate.get('syllableCount')}음절 / {rate.get('durationSeconds')}초)  {sym} {rate.get('label', '')}")

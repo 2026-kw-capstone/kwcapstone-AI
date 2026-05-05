@@ -4,9 +4,27 @@ info:
   description: |
     성인 언어·조음 장애 재활을 위한 AI 기반 발화 훈련 시스템 API.
 
+    ## 발음 평가 방식
+
+    ### 1단계 — wav2vec2 음향 인식 (Acoustic Layer)
+    발음 점수 산출에는 Whisper 대신 **wav2vec2 CTC 모델**(kresnik/wav2vec2-large-xlsr-korean)을 우선 사용합니다.
+    Whisper는 언어 모델 보정이 강해 아래 오류를 정확으로 처리하는 경우가 있습니다.
+    - **모음 왜곡**: "아" 대신 "어"로 발음해도 Whisper는 문맥상 "아"로 보정
+    - **받침 약화**: "약"을 "야"로 발음해도 Whisper가 받침을 채워 넣음
+    - **기식음 혼동**: ㅂ/ㅍ 구분 등 음향적 미세 차이를 Whisper가 무시
+
+    wav2vec2는 언어 모델 보정 없이 **음향 파형에서 직접 음소를 추출**하므로 이러한 오류를 감지할 수 있습니다.
+    모델 미설치·인식 실패 시 Whisper STT 결과로 자동 fallback됩니다.
+
+    ### 2단계 — G2P + 음소 시퀀스 정렬
+    참조 텍스트와 인식 결과 모두 **G2P(Grapheme-to-Phoneme)** 변환을 거쳐 실제 발음 형태로 변환된 뒤,
+    음소(초성/중성/종성) 단위 시퀀스 정렬로 비교합니다.
+    연음화(`닭이`→`달기`), 경음화(`학교`→`학꾜`), 비음화(`국민`→`궁민`) 등 주요 음운 규칙이 자동 적용되어
+    표기가 달라도 발음이 동일하면 정확한 발음으로 인정합니다.
+
     ## 인증
     환경 변수 `COLAB_API_TOKEN`이 설정된 경우 모든 엔드포인트에 `x-api-token` 헤더가 필요합니다.
-  version: 1.0.0
+  version: 1.2.0
 
 servers:
   - url: http://localhost:8000
@@ -42,28 +60,43 @@ components:
           type: string
           example: "audio download failed"
 
-    # ── 음성 품질 분석 ──────────────────────────────────────────────────────────
-    VoiceAnalysis:
+    # ── 한 음절 발성 분석 ──────────────────────────────────────────────────────
+    SyllableVoiceResponse:
       type: object
-      description: 음성 품질 종합 분석 결과
+      description: 한 음절 오디오에 대한 발성 시간 점수
       properties:
-        loudness:
+        success:
+          type: boolean
+          example: true
+        vocalizationDuration:
           type: object
           description: |
-            음량 분석 — good: > -25 dBFS / warn: -35~-25 / error: < -35
+            발성 시간 점수 — 무음 제거 후 실제 발성 구간 합산
+            0~0.3초: 0~50점 / 0.3~2.0초: 50~100점 / 2.0초 이상: 100점
+            good: score ≥ 75 / warn: 40~74 / error: < 40
           properties:
-            avgDb:
+            durationSeconds:
               type: number
               format: float
-              description: 평균 음량 (dBFS)
-              example: -23.5
+              description: 실제 발성 시간 (초)
+              example: 0.84
+            score:
+              type: integer
+              description: 발성 시간 점수 (0~100)
+              example: 72
             grade:
               type: string
               enum: [good, warn, error]
               example: good
             label:
               type: string
-              example: "적절한 크기예요"
+              example: "발성 시간이 충분해요"
+
+    # ── 음성 품질 분석 ──────────────────────────────────────────────────────────
+    VoiceAnalysis:
+      type: object
+      description: 음성 품질 종합 분석 결과
+      properties:
         speechRate:
           type: object
           description: |
@@ -102,23 +135,26 @@ components:
     # ── 음절 분석 ───────────────────────────────────────────────────────────────
     WordAnalysisItem:
       type: object
-      description: 음절 단위 발음 평가 결과 (음절 카드 색깔 표시용)
+      description: |
+        음절 단위 발음 평가 결과 (음절 카드 색깔 표시용).
+        점수는 G2P 변환 후 음소(초/중/종성) 시퀀스 정렬 기반으로 산출됩니다.
       properties:
         refChar:
           type: string
-          description: 참조 음절
-          example: "안"
+          description: 참조 음절 (원본 표기)
+          example: "닭"
         hypChar:
           type: string
           description: "인식된 음절 (누락 시 빈 문자열)"
-          example: "안"
+          example: "달"
         grade:
           type: string
           enum: [good, warn, error]
           description: |
-            - good  : 완벽 일치
-            - warn  : 1~2개 음소 차이
-            - error : 3개 모두 다름 또는 누락
+            G2P 변환 후 음소 단위 비교 결과:
+            - good  : 오류 음소 없음 (음운 규칙에 맞는 발음 포함)
+            - warn  : 오류 음소 1~2개
+            - error : 오류 음소 3개 이상 또는 음절 누락
           example: good
 
     # ── 참조 텍스트 기반 연습 응답 ─────────────────────────────────────────────
@@ -135,16 +171,26 @@ components:
           example: "안녕하세요"
         sttText:
           type: string
-          description: Whisper STT 인식 결과
+          description: Whisper STT 인식 결과 (의미 이해용)
+          example: "안녕하세요"
+        acousticText:
+          type: string
+          nullable: true
+          description: |
+            wav2vec2 음향 인식 결과 (발음 점수 산출에 사용됨).
+            모델 미설치 또는 인식 실패 시 null — 이 경우 sttText 기준으로 점수 산출.
           example: "안녕하세요"
         pronunciationScore:
           type: number
           format: float
-          description: "발음 정확도 (0~100, 음절별 초/중/종성 비교 평균)"
+          description: |
+            발음 정확도 (0~100).
+            acousticText(있을 경우) 또는 sttText를 G2P 변환 후 음소 단위 정렬하여 음절별 점수 평균.
+            연음화·경음화 등 음운 규칙에 맞는 발음은 오류로 처리하지 않음.
           example: 85.5
         feedback:
           type: string
-          description: AI 맞춤 피드백
+          description: 오류 유형(초성/중성/종성/누락)에 따른 격려 중심 피드백
           example: "받침이나 끝소리가 약하게 들린 부분이 있어요."
         wordAnalysis:
           type: array
@@ -170,20 +216,30 @@ components:
           example: "접수 요청하기"
         referenceText:
           type: string
-          description: LLM이 추론한 참조 텍스트
+          description: LLM이 추론한 참조 텍스트 (G2P 음소 비교의 기준으로 사용됨)
           example: "진료 예약을 하러 왔어요"
         sttText:
           type: string
+          description: Whisper STT 인식 결과 (LLM 의미 평가 및 히스토리용)
           example: "진료 보러 왔어요"
+        acousticText:
+          type: string
+          nullable: true
+          description: |
+            wav2vec2 음향 인식 결과 (발음 점수 산출에 사용됨).
+            모델 미설치 또는 인식 실패 시 null — 이 경우 sttText 기준으로 점수 산출.
+          example: "진려 보러 왔어요"
         pronunciationScore:
           type: number
           format: float
-          description: "발음 정확도 (0~100)"
+          description: |
+            발음 정확도 (0~100).
+            acousticText(있을 경우) 또는 sttText를 LLM 추론 참조 텍스트와 G2P 변환 후 음소 단위 비교.
           example: 85.5
         meaningDeliveryScore:
           type: number
           format: float
-          description: "의미 전달률 (0~100, LLM 맥락 평가)"
+          description: "의미 전달률 (0~100, GPT-4o-mini 맥락 평가)"
           example: 78.3
         feedback:
           type: string
@@ -403,19 +459,23 @@ paths:
       tags: [practice]
       summary: 참조 텍스트 기반 발음 평가
       description: |
-        사용자가 지정한 참조 텍스트와 발화를 비교하여 발음을 평가합니다.
+        사용자가 지정한 참조 텍스트와 발화를 **wav2vec2 음향 인식 + G2P 음소 단위**로 비교하여 발음을 평가합니다.
 
-        **점수 항목:**
-        - `pronunciationScore` (발음 정확도): 음절별 초/중/종성 비교 평균
-        - `meaningDeliveryScore` (의미 전달률): CER 기반 `max(0, 100×(1−CER))`
+        **평가 흐름:**
+        1. **wav2vec2 음향 인식**: 언어 모델 보정 없이 오디오에서 직접 음소 추출 (모음 왜곡·받침 약화·기식음 혼동 감지 가능)
+        2. 모델 미설치 또는 인식 실패 시 Whisper STT 결과로 자동 fallback
+        3. 인식 텍스트 + 참조 텍스트 양측에 G2P 적용 (연음화·경음화·비음화 등 음운 규칙 반영)
+        4. 음소(초/중/종성) flat 시퀀스로 분해 후 SequenceMatcher 정렬
+        5. ref 음절별 오류 음소 수 집계 → 점수/등급 산출
 
         **음절 점수 기준:**
-        | 음소 차이 수 | 등급 |
-        |---|---|
-        | 0개 (완벽) | good |
-        | 1~2개 차이 | warn |
-        | 3개 모두 다름 | error |
-        | 누락 | error |
+        | 오류 음소 수 | 점수 | 등급 |
+        |---|---|---|
+        | 0개 (음운 규칙 맞는 발음 포함) | 100 | good |
+        | 1개 | 70 | warn |
+        | 2개 | 40 | warn |
+        | 3개 이상 | 10 | error |
+        | 음절 누락 | 0 | error |
       requestBody:
         required: true
         content:
@@ -441,6 +501,7 @@ paths:
                 success: true
                 referenceText: "안녕하세요"
                 sttText: "안녕하세요"
+                acousticText: "안녕하세요"
                 pronunciationScore: 85.5
                 feedback: "받침이나 끝소리가 약하게 들린 부분이 있어요."
                 wordAnalysis:
@@ -451,10 +512,6 @@ paths:
                     hypChar: "녕"
                     grade: good
                 voiceAnalysis:
-                  loudness:
-                    avgDb: -23.5
-                    grade: good
-                    label: "적절한 크기예요"
                   speechRate:
                     syllablesPerSecond: 4.2
                     grade: good
@@ -474,11 +531,12 @@ paths:
       tags: [practice]
       summary: 시나리오 맥락 기반 발음 평가
       description: |
-        시나리오 맥락을 고려해 GPT-4o-mini가 참조 텍스트를 추론하고 발음을 평가합니다.
+        GPT-4o-mini가 시나리오 맥락으로 참조 텍스트를 추론하고, **wav2vec2 음향 인식 + G2P 음소 단위**로 발음을 평가합니다.
 
-        참조 텍스트 기반 평가와의 차이:
+        `/practice/reference`와의 차이:
         - 참조 텍스트를 LLM이 대화 맥락으로부터 추론
-        - `meaningDeliveryScore`는 CER 대신 LLM의 맥락 평가 (0~100)
+        - `meaningDeliveryScore` 제공 (LLM 맥락 평가, 0~100)
+        - 발음 평가는 동일하게 wav2vec2 음향 인식 → G2P → 음소 시퀀스 정렬 방식 적용
       requestBody:
         required: true
         content:
@@ -509,6 +567,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ScenarioPracticeResponse'
+        '401':
+          $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/schemas/ErrorResponse'
+
+  # ────────────────────────────────────────────────────────────────────────────
+  /practice/syllable-voice:
+    post:
+      tags: [practice]
+      summary: 한 음절 발성 시간 분석
+      description: |
+        한 음절 오디오의 **발성 시간**을 측정하여 0~100점으로 반환합니다.
+
+        **발성 시간 점수 기준 (무음 제거 후 실제 발성 구간 합산):**
+        | 발성 시간 | 점수 |
+        |---|---|
+        | 0 ~ 0.3초 | 0 ~ 50점 (선형) |
+        | 0.3 ~ 2.0초 | 50 ~ 100점 (선형) |
+        | 2.0초 이상 | 100점 |
+
+        **등급 기준 (두 항목 공통):**
+        | 점수 | 등급 |
+        |---|---|
+        | ≥ 75 | good |
+        | 40 ~ 74 | warn |
+        | < 40 | error |
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [s3Url]
+              properties:
+                s3Url:
+                  type: string
+                  example: "https://bucket.s3.amazonaws.com/audio/syllable.wav"
+      responses:
+        '200':
+          description: 분석 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyllableVoiceResponse'
+              example:
+                success: true
+                vocalizationDuration:
+                  durationSeconds: 0.84
+                  score: 72
+                  grade: good
+                  label: "발성 시간이 충분해요"
         '401':
           $ref: '#/components/schemas/ErrorResponse'
         '500':

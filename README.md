@@ -12,12 +12,19 @@ OpenAI Whisper STT, GPT-4o-mini LLM, TTS를 결합하여 시나리오 생성, �
 - 각 레벨은 3개의 스텝으로 구성되어 자연스러운 대화 흐름을 유도합니다.
 - 각 스텝은 `assistantMessage`(AI 질문)와 `userIntent`(사용자 연습 목표)로 구성됩니다.
 
-### 2. 정교한 발음 분석 및 피드백 (`score_service`)
-- **한글 자모 분해(초성/중성/종성)** 기반으로 음절별 오류 위치를 정밀하게 분석합니다.
-- SequenceMatcher 정렬을 통해 equal / substitute / delete / insert 오류 유형을 구분합니다.
-- 각 음절에 `grade`(good / warn / error)를 부여하여 UI 색상 렌더링에 활용합니다.
-- **Reference 모드**: 사용자가 입력한 목표 문장과 STT 결과를 직접 비교합니다.
-- **Scenario 모드**: LLM이 STT 결과와 시나리오 맥락을 보고 의도 문장을 추정한 뒤 평가합니다.
+### 2. 음소 단위 발음 분석 및 피드백 (`score_service`, `phoneme_acoustic_service`)
+- **wav2vec2 CTC 음향 인식**으로 발음 점수를 산출합니다. Whisper의 언어 모델 보정을 우회하여 실제 발화된 음소를 그대로 반영합니다.
+  - **모음 왜곡** 감지: "아" 대신 "어"로 발음 → Whisper는 문맥으로 보정하지만 wav2vec2는 "어"로 출력
+  - **받침 약화** 감지: "약"을 "야"로 발음 → Whisper가 받침을 채워 넣지만 wav2vec2는 누락 그대로 출력
+  - **기식음 혼동** 감지: ㅂ/ㅍ 구분 등 음향적 미세 차이 감지
+  - 모델(`kresnik/wav2vec2-large-xlsr-korean`) 미설치 또는 인식 실패 시 Whisper STT로 자동 fallback
+- **G2P(Grapheme-to-Phoneme)** 변환으로 한국어 음운 규칙(연음화·경음화·비음화·격음화)을 추가 적용합니다.
+  - 예) `닭이` → `달기`, `학교` → `학꾜`, `국민` → `궁민`
+  - 표기가 달라도 발음이 같으면 정확한 발음으로 인정합니다.
+- 각 음절을 **초성/중성/종성 음소 단위**로 분해하여 flat 시퀀스를 만들고, SequenceMatcher로 음소 단위 정렬을 수행합니다.
+- 음소 오류를 다시 원본 음절 단위로 집계하여 `grade`(good / warn / error)를 부여, UI 색상 렌더링에 활용합니다.
+- **Reference 모드**: wav2vec2 음향 인식 결과와 목표 문장을 G2P 변환 후 음소 단위로 비교합니다.
+- **Scenario 모드**: LLM이 시나리오 맥락으로 의도 문장을 추정한 뒤, wav2vec2 결과와 동일한 G2P 음소 분석을 적용합니다.
 
 ### 3. 음성 품질 분석 (`voice_analysis_service`)
 - 실제 오디오 파일을 librosa로 분석하여 세 가지 음성 품질 지표를 제공합니다.
@@ -61,13 +68,14 @@ ai_speech_pipeline/
 │   └── settings.py              # 환경 변수 로드
 │
 ├── services/
-│   ├── scenario_service.py      # 시나리오 생성 로직 (GPT-4o-mini)
-│   ├── audio_service.py         # S3 다운로드 및 오디오 전처리
-│   ├── stt_service.py           # Whisper 기반 음성 인식
-│   ├── score_service.py         # 발음 평가 및 한글 자모 분석
-│   ├── voice_analysis_service.py# 음량/발화속도/침묵비율 음성 품질 분석
-│   ├── tts_service.py           # OpenAI TTS 음성 합성
-│   └── chat_service.py          # LLM 기반 자유 대화
+│   ├── scenario_service.py       # 시나리오 생성 로직 (GPT-4o-mini)
+│   ├── audio_service.py          # S3 다운로드 및 오디오 전처리
+│   ├── stt_service.py            # Whisper 기반 음성 인식 (의미 이해용)
+│   ├── phoneme_acoustic_service.py # wav2vec2 CTC 음향 인식 (발음 점수용)
+│   ├── score_service.py          # G2P + 음소 시퀀스 정렬 기반 발음 평가
+│   ├── voice_analysis_service.py # 음량/발화속도/침묵비율 음성 품질 분석
+│   ├── tts_service.py            # OpenAI TTS 음성 합성
+│   └── chat_service.py           # LLM 기반 자유 대화
 │
 ├── api/
 │   └── app.py                   # FastAPI 엔드포인트 정의
@@ -105,6 +113,14 @@ pip install -r requirements.txt
 # Ubuntu: apt-get install -y ffmpeg
 ```
 
+> **macOS에서 g2pk(G2P) 설치 시 주의**
+> g2pk는 Java(JDK)와 `ninja`, `ant` 빌드 도구가 필요합니다.
+> ```bash
+> brew install ninja ant
+> # JDK 설치 후 JAVA_HOME을 지정해서 pip install 실행
+> JAVA_HOME="$(/usr/libexec/java_home)" pip install -r requirements.txt
+> ```
+
 ### 3. 서버 실행
 
 ```bash
@@ -138,31 +154,50 @@ python test_analysis.py --mode scenario
 
 ---
 
-## 🧮 핵심 알고리즘: 한글 조음 분석
+## 🧮 핵심 알고리즘: G2P 기반 음소 단위 발음 분석
+
+### 처리 흐름
+
+```
+참조 텍스트 ──→ G2P(음운 규칙) ──→ 음소 flat 시퀀스 ──┐
+                                                        ├─→ 음소 단위 정렬 → 음절별 오류 집계 → 점수/등급
+STT 텍스트  ──→ G2P(음운 규칙) ──→ 음소 flat 시퀀스 ──┘
+```
+
+### 적용 음운 규칙 (g2pk)
+
+| 규칙 | 예시 | 변환 결과 |
+|------|------|-----------|
+| 연음화 | 닭이 | 달기 |
+| 경음화 | 학교 | 학꾜 |
+| 비음화 | 국민 | 궁민 |
+| 격음화 | 좋다 | 조타 |
+
+> 표기가 달라도 G2P 변환 결과가 동일하면 **정확한 발음으로 인정**합니다.
 
 ### 발음 점수 산출
 
-WER은 STT가 띄어쓰기를 생략하면 점수가 왜곡되는 문제가 있어, **음절 단위 평균 점수**만을 사용합니다.
+WER은 띄어쓰기 생략 시 점수가 왜곡되므로, G2P 변환 후 **음소 단위 오류를 음절별로 집계한 평균 점수**를 사용합니다.
 
 $$\text{pronunciationScore} = \frac{1}{N} \sum_{i=1}^{N} \text{syllableScore}_i$$
 
 ### 음절 점수 기준
 
-각 음절은 자모(초성/중성/종성) 차이 개수에 따라 점수가 부여됩니다.
+각 음절의 점수는 G2P 변환 후 음소 정렬에서 감지된 오류 음소(초성/중성/종성) 개수로 결정됩니다.
 
-| 오류 유형 | 다른 자모 수 | 점수 |
-|----------|------------|------|
-| 정확 (equal) | 0 | 100 |
-| 경미한 오류 | 1 | 70 |
-| 중간 오류 | 2 | 40 |
-| 심각한 오류 | 3 | 10 |
-| 누락 (delete) | - | 0 |
+| 오류 음소 수 | 점수 | 등급 |
+|------------|------|------|
+| 0개 (정확) | 100 | good |
+| 1개 | 70 | warn |
+| 2개 | 40 | warn |
+| 3개 이상 | 10 | error |
+| 음절 누락 | 0 | error |
 
 ### Grade 기준 (UI 색상 렌더링용)
 
 | Grade | 조건 | 의미 |
 |-------|------|------|
-| `good` | score ≥ 100 | 정확한 발음 |
+| `good` | score = 100 | 정확한 발음 |
 | `warn` | score ≥ 40 | 부분 오류 |
 | `error` | score < 40 | 심각한 오류 또는 누락 |
 
@@ -195,5 +230,7 @@ $$\text{pronunciationScore} = \frac{1}{N} \sum_{i=1}^{N} \text{syllableScore}_i$
 - **Backend**: FastAPI, Uvicorn
 - **AI/ML**: OpenAI GPT-4o-mini, Whisper (small/large), OpenAI TTS (tts-1)
 - **Audio Processing**: Pydub, FFmpeg, librosa
+- **Phoneme Analysis**: g2pk (Korean G2P), konlpy, jamo
 - **Evaluation**: JiWER (WER/CER), Difflib (SequenceMatcher)
 - **Environment**: python-dotenv, Python 3.9+
+- **Build Tools** (macOS): ninja, ant (g2pk 의존성)

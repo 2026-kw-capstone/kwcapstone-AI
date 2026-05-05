@@ -8,31 +8,6 @@ def count_korean_syllables(text: str) -> int:
     return sum(1 for ch in text if '가' <= ch <= '힣')
 
 
-def analyze_loudness(y: np.ndarray, sr: int) -> Dict[str, Any]:
-    """
-    음량 분석 (RMS → dBFS)
-    - good  : > -25 dBFS  (적절한 크기)
-    - warn  : -35 ~ -25   (조금 작은 편)
-    - error : < -35 dBFS  (너무 작음)
-    """
-    rms = librosa.feature.rms(y=y)[0]
-    mean_rms = float(np.mean(rms))
-
-    avg_db = float(20 * np.log10(mean_rms)) if mean_rms > 0 else -80.0
-
-    if avg_db >= -25:
-        grade = "good"
-        label = "적절한 크기예요"
-    elif avg_db >= -35:
-        grade = "warn"
-        label = "목소리가 조금 작아요"
-    else:
-        grade = "error"
-        label = "목소리가 너무 작아요"
-
-    return {"avgDb": round(avg_db, 2), "grade": grade, "label": label}
-
-
 def analyze_speech_rate(y: np.ndarray, sr: int, stt_text: str) -> Dict[str, Any]:
     """
     발화 속도 분석 (음절/초)
@@ -108,34 +83,9 @@ def analyze_voice(audio_path: str, stt_text: str = "") -> Dict[str, Any]:
     y, sr = librosa.load(audio_path, sr=None, mono=True)
 
     return {
-        "loudness": analyze_loudness(y, sr),
         "speechRate": analyze_speech_rate(y, sr, stt_text),
         "silenceRatio": analyze_silence_ratio(y, sr)
     }
-
-
-def analyze_syllable_loudness(y: np.ndarray, sr: int) -> Dict[str, Any]:
-    """
-    한 음절 음량 분석 (RMS → dBFS → 0~100점)
-    -15 dBFS 이상 = 100점, -45 dBFS 이하 = 0점
-    """
-    rms = librosa.feature.rms(y=y)[0]
-    mean_rms = float(np.mean(rms))
-    avg_db = float(20 * np.log10(mean_rms)) if mean_rms > 0 else -80.0
-
-    score = max(0, min(100, round((avg_db + 45) / 30 * 100)))
-
-    if score >= 75:
-        grade = "good"
-        label = "충분한 음량이에요"
-    elif score >= 40:
-        grade = "warn"
-        label = "좀 더 크게 발성해 보세요"
-    else:
-        grade = "error"
-        label = "발성이 너무 작아요"
-
-    return {"avgDb": round(avg_db, 2), "score": score, "grade": grade, "label": label}
 
 
 def analyze_vocalization_duration(y: np.ndarray, sr: int) -> Dict[str, Any]:
@@ -176,6 +126,5 @@ def analyze_syllable_voice(audio_path: str) -> Dict[str, Any]:
     y, sr = librosa.load(audio_path, sr=None, mono=True)
 
     return {
-        "loudness": analyze_syllable_loudness(y, sr),
         "vocalizationDuration": analyze_vocalization_duration(y, sr)
     }

@@ -35,7 +35,7 @@ def _write_wav(
     """
     stdlib 만 사용해 사인파 + 침묵 구간이 포함된 WAV 파일을 생성합니다.
 
-    amplitude=0.3  →  약 -11 dBFS (loudness: good 범위)
+    amplitude=0.3  →  약 -11 dBFS
     silence 구간   →  침묵 비율 계산용
     """
     n = int(sample_rate * duration)
@@ -70,8 +70,7 @@ def _ensure_audio_dir():
 def synthetic_wav() -> str:
     """
     일반적인 합성 WAV.
-    음량 good 범위(-11 dBFS), 침묵 비율 적당.
-    voice_analysis / API 테스트에서 범용으로 사용.
+    침묵 비율 적당. voice_analysis / API 테스트에서 범용으로 사용.
     """
     path = str(AUDIO_DIR / "synthetic.wav")
     _write_wav(path, duration=2.0, amplitude=0.3, silence_start=0.7, silence_end=1.0)
@@ -80,7 +79,7 @@ def synthetic_wav() -> str:
 
 @pytest.fixture(scope="session")
 def quiet_wav() -> str:
-    """매우 작은 음량(~-55 dBFS) → loudness 'error' 유발."""
+    """매우 작은 음량(~-55 dBFS) 합성 WAV."""
     path = str(AUDIO_DIR / "quiet.wav")
     _write_wav(path, duration=2.0, amplitude=0.003, silence_start=0.9, silence_end=1.0)
     return path

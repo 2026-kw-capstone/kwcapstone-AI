@@ -17,7 +17,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.voice_analysis_service import (
-    analyze_loudness,
     analyze_silence_ratio,
     analyze_speech_rate,
     analyze_voice,
@@ -52,60 +51,6 @@ class TestCountKoreanSyllables:
     ])
     def test_various_sentences(self, text, expected):
         assert count_korean_syllables(text) == expected
-
-
-# ── 음량 분석 ─────────────────────────────────────────────────────────────────
-
-class TestAnalyzeLoudness:
-    def test_result_structure(self, synthetic_wav):
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        result = analyze_loudness(y, sr)
-
-        assert set(result.keys()) == {"avgDb", "grade", "label"}
-
-    def test_types(self, synthetic_wav):
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        result = analyze_loudness(y, sr)
-
-        assert isinstance(result["avgDb"], float)
-        assert isinstance(result["grade"], str)
-        assert isinstance(result["label"], str)
-
-    def test_grade_is_valid(self, synthetic_wav):
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        result = analyze_loudness(y, sr)
-
-        assert result["grade"] in ("good", "warn", "error")
-
-    def test_normal_audio_is_good(self, synthetic_wav):
-        """amplitude=0.3 → ~-11 dBFS → good 범위."""
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        result = analyze_loudness(y, sr)
-
-        assert result["grade"] == "good"
-        assert result["avgDb"] > -25
-
-    def test_quiet_audio_triggers_error(self, quiet_wav):
-        """amplitude=0.003 → ~-55 dBFS → error."""
-        y, sr = librosa.load(quiet_wav, sr=None, mono=True)
-        result = analyze_loudness(y, sr)
-
-        assert result["grade"] == "error"
-        assert result["avgDb"] < -35
-
-    def test_silent_audio_does_not_crash(self):
-        """완전 무음 신호도 예외 없이 처리."""
-        y = np.zeros(16000, dtype=np.float32)
-        result = analyze_loudness(y, 16000)
-
-        assert result["avgDb"] == -80.0
-        assert result["grade"] == "error"
-
-    def test_label_is_nonempty(self, synthetic_wav):
-        y, sr = librosa.load(synthetic_wav, sr=None, mono=True)
-        result = analyze_loudness(y, sr)
-
-        assert len(result["label"]) > 0
 
 
 # ── 발화 속도 분석 ─────────────────────────────────────────────────────────────
@@ -195,13 +140,11 @@ class TestAnalyzeVoice:
     def test_full_structure(self, synthetic_wav):
         result = analyze_voice(synthetic_wav, "안녕하세요")
 
-        assert "loudness" in result
         assert "speechRate" in result
         assert "silenceRatio" in result
 
     def test_all_subkeys(self, synthetic_wav):
         result = analyze_voice(synthetic_wav, "안녕하세요")
-        assert set(result["loudness"].keys()) == {"avgDb", "grade", "label"}
         assert set(result["speechRate"].keys()) == {"syllablesPerSecond", "grade", "label"}
         assert set(result["silenceRatio"].keys()) == {"silencePercent", "grade", "label"}
 
@@ -209,7 +152,6 @@ class TestAnalyzeVoice:
         result = analyze_voice(synthetic_wav, "안녕하세요")
         valid = {"good", "warn", "error"}
 
-        assert result["loudness"]["grade"] in valid
         assert result["speechRate"]["grade"] in valid
         assert result["silenceRatio"]["grade"] in valid
 
@@ -217,12 +159,7 @@ class TestAnalyzeVoice:
         """STT 텍스트 없어도 예외 없이 동작해야 함."""
         result = analyze_voice(synthetic_wav, "")
 
-        assert "loudness" in result
         assert result["speechRate"]["grade"] == "error"
-
-    def test_quiet_audio_loudness(self, quiet_wav):
-        result = analyze_voice(quiet_wav, "안녕")
-        assert result["loudness"]["grade"] == "error"
 
     def test_mostly_silent_silence_ratio(self, mostly_silent_wav):
         result = analyze_voice(mostly_silent_wav, "가")

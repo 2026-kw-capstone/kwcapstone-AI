@@ -178,7 +178,6 @@ def syllable_voice(req: SyllableVoiceRequest, x_api_token: Optional[str] = Heade
 
         return {
             "success": True,
-            "loudness": result["loudness"],
             "vocalizationDuration": result["vocalizationDuration"]
         }
     except Exception as e:

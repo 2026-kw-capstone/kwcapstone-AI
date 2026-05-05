@@ -333,32 +333,14 @@ class TestReferencePracticeEndpoint:
     def test_voice_analysis_present(self, synthetic_wav):
         data = self._call(synthetic_wav).json()
         voice = data["voiceAnalysis"]
-        assert "loudness" in voice
         assert "speechRate" in voice
         assert "silenceRatio" in voice
 
     def test_voice_analysis_grades(self, synthetic_wav):
         voice = self._call(synthetic_wav).json()["voiceAnalysis"]
-        for key in ("loudness", "speechRate", "silenceRatio"):
+        for key in ("speechRate", "silenceRatio"):
             assert voice[key]["grade"] in ("good", "warn", "error")
             assert "label" in voice[key]
-
-    def test_loudness_is_good_for_synthetic(self, synthetic_wav):
-        """합성 WAV(~-11 dBFS) → 음량 good."""
-        voice = self._call(synthetic_wav).json()["voiceAnalysis"]
-        assert voice["loudness"]["grade"] == "good"
-
-    def test_quiet_audio_loudness_error(self, quiet_wav):
-        """작은 음량 WAV → 음량 error."""
-        with patch("api.app.download_audio_from_s3", side_effect=make_s3_mock(quiet_wav)), \
-             patch("api.app.preprocess_audio_to_mono_16k_wav", side_effect=_mock_preprocess), \
-             patch("api.app.transcribe_audio", return_value="안녕"), \
-             patch("services.score_service._get_acoustic_text", return_value=None):
-            res = client.post(
-                "/practice/reference",
-                json={"s3Url": "https://mock.s3/audio.wav", "referenceText": "안녕"},
-            )
-        assert res.json()["voiceAnalysis"]["loudness"]["grade"] == "error"
 
     def test_feedback_is_nonempty_string(self, synthetic_wav):
         feedback = self._call(synthetic_wav).json()["feedback"]
@@ -427,13 +409,12 @@ class TestScenarioPracticeEndpoint:
 
     def test_voice_analysis_present(self, synthetic_wav):
         voice = self._call(synthetic_wav).json()["voiceAnalysis"]
-        assert "loudness" in voice
         assert "speechRate" in voice
         assert "silenceRatio" in voice
 
     def test_voice_analysis_grades(self, synthetic_wav):
         voice = self._call(synthetic_wav).json()["voiceAnalysis"]
-        for key in ("loudness", "speechRate", "silenceRatio"):
+        for key in ("speechRate", "silenceRatio"):
             assert voice[key]["grade"] in ("good", "warn", "error")
             assert "label" in voice[key]
 
