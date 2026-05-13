@@ -1,3 +1,4 @@
+import re
 from difflib import SequenceMatcher
 from jiwer import wer, cer
 from openai import OpenAI
@@ -7,9 +8,15 @@ from typing import List, Dict, Any, Optional
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# 발음에 영향 없는 구두점·특수문자 제거용 패턴
+# 한글 음절(가-힣), 한글 자모(ㄱ-ㅣ), 숫자, 영문자만 유지
+_PUNCT_RE = re.compile(r'[^가-힣ㄱ-ㆎ0-9a-zA-Z]')
+
 
 def split_korean_chars(text: str) -> List[str]:
-    return [ch for ch in text.strip() if ch.strip()]
+    # 마침표·쉼표 등 구두점을 제거한 뒤 문자 단위로 분리
+    cleaned = _PUNCT_RE.sub('', text)
+    return [ch for ch in cleaned if ch.strip()]
 
 
 def safe_int(value, default=0):

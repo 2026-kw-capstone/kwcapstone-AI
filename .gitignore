@@ -30,3 +30,6 @@ ENV/
 
 # 로그
 *.log
+
+# Claude Code worktrees
+.claude/worktrees/
