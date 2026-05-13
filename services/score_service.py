@@ -484,14 +484,25 @@ def attach_syllable_timestamps(
 
 
 def infer_reference_text(step_content: str, stt_text: str) -> str:
-    """연습 맥락과 STT 결과를 보고 사용자 의도 문장을 추정."""
-    system_prompt = (
-        "너는 언어 재활 평가 보조자야.\n"
-        "연습 맥락과 STT 결과를 보고 사용자가 말하려 했던 한국어 문장을 한 문장으로 추정해.\n"
-        "반드시 JSON으로만 응답해.\n"
-        '{"inferredReferenceText": "..."}'
-    )
-    user_prompt = f"[연습 맥락]\n{step_content}\n\n[STT 결과]\n{stt_text}"
+    """STT 결과(어눌한 발음)를 바탕으로 사용자가 말하려 했던 문장을 추정.
+    시나리오 맥락은 힌트로만 사용하고, STT 텍스트를 최대한 유지하며 발음 오류만 교정."""
+    system_prompt = """\
+너는 언어 재활 평가 보조자야.
+말이 어눌한 사용자의 STT 결과를 보고, 사용자가 실제로 말하려 했던 문장을 추정해.
+
+규칙:
+1. STT 결과를 최우선으로 유지해. 연습 맥락은 발음 교정 힌트로만 사용해.
+2. 발음 오류로 인한 음절 치환·탈락만 교정해. 의미나 내용을 바꾸지 마.
+   예: "아녕하세오" → "안녕하세요" (발음 교정 O)
+   예: "아니요" → "다른 불편한 증상은 없습니다" (내용 변경 X, 절대 금지)
+3. STT가 이미 종결 어미(요, 다, 까, 세요, 어요, 아요, 네요, 군요 등)로 끝나면 완결 문장으로 판단해.
+   → 음절을 추가하지 말고, 발음 오류만 교정해. 음절 수를 STT와 동일하게 유지해.
+4. STT가 명사·조사·어간 등 비종결 형태로 끝나면 미완결 문장으로 판단해.
+   → 문장을 자연스럽게 끝맺는 종결어미까지만 보완 허용 (+3음절 이내).
+   예: "아메리카노" → "아메리카노 주세요" (종결어 보완 O)
+5. 반드시 JSON으로만 응답해.
+{"inferredReferenceText": "..."}"""
+    user_prompt = f"[연습 맥락 (힌트용)]\n{step_content}\n\n[STT 결과 (발음 교정 기준)]\n{stt_text}"
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0.1,

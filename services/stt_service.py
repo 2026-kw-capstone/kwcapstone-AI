@@ -20,11 +20,18 @@ def _get_voiced_duration(audio_path: str) -> float:
         return 0.0
 
 
+_TRAILING_PUNCT = str.maketrans("", "", ".。!?！？,，")
+
+def _strip_punct(text: str) -> str:
+    return text.translate(_TRAILING_PUNCT).rstrip()
+
 def _has_repeated_suffix(text: str, min_len: int = 2) -> bool:
-    """'세요세요', '습니다습니다' 같은 접미어 반복 할루시네이션 감지."""
-    n = len(text)
+    """'세요세요', '습니다습니다' 같은 접미어 반복 할루시네이션 감지.
+    Whisper가 끝에 구두점을 붙이는 경우를 대비해 구두점 제거 후 검사."""
+    clean = _strip_punct(text)
+    n = len(clean)
     for length in range(min_len, n // 2 + 1):
-        if text[n - 2 * length : n - length] == text[n - length:]:
+        if clean[n - 2 * length : n - length] == clean[n - length:]:
             return True
     return False
 
@@ -51,13 +58,13 @@ def transcribe_audio(audio_path: str) -> str:
 
     text = result["text"].strip()
 
-    # 접미어 반복 패턴 감지 ("세요세요", "습니다습니다" 등)
+    # 접미어 반복 패턴 감지 ("세요세요.", "습니다습니다" 등)
     if _has_repeated_suffix(text):
-        # 반복된 접미어를 제거하고 앞부분만 반환
-        n = len(text)
+        clean = _strip_punct(text)
+        n = len(clean)
         for length in range(2, n // 2 + 1):
-            if text[n - 2 * length : n - length] == text[n - length:]:
-                text = text[: n - length].strip()
+            if clean[n - 2 * length : n - length] == clean[n - length:]:
+                text = clean[: n - length].strip()
                 break
 
     # 실제 발화 시간(무음 제외) 대비 음절 수 과다 → 할루시네이션 판정
