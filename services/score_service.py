@@ -586,7 +586,6 @@ def generate_scenario_feedback(
 
 def generate_reference_feedback(
     reference_text: str,
-    stt_text: str,
     pronunciation_error_summary: str,
     speech_rate: Dict[str, Any],
     pause_ratio: Dict[str, Any],
@@ -615,9 +614,6 @@ def generate_reference_feedback(
     user_prompt = f"""\
 [목표 문장]
 {reference_text}
-
-[STT 결과]
-{stt_text}
 
 [발음 오류 분석]
 {pronunciation_error_summary}
@@ -739,7 +735,6 @@ def evaluate_reference_response(
 
     llm_result = generate_reference_feedback(
         reference_text=reference_text,
-        stt_text=stt_text,
         pronunciation_error_summary=pronunciation_error_summary,
         speech_rate=speech_rate,
         pause_ratio=pause_ratio,
