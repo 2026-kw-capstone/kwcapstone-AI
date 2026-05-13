@@ -118,19 +118,26 @@ def analyze_voice(audio_path: str, stt_text: str = "") -> Dict[str, Any]:
 
 # ── 단모음 발음 정확도 분석 ────────────────────────────────────────────────────
 
-# 한국어 단모음 기준 포먼트 (F1, F2) in Hz
-# 출처: 한국어 음성학 연구 (성인 평균치 기준)
-_KOREAN_VOWEL_FORMANTS: Dict[str, Tuple[float, float]] = {
-    "아": (780, 1230),
-    "이": (310, 2590),
-    "우": (335,  840),
-    "에": (500, 1870),
-    "오": (490,  890),
-    "애": (690, 1790),
-    "외": (510, 1590),
-    "위": (310, 2050),
-    "으": (460, 1280),
-    "의": (460, 1280),
+# 모음별 포먼트 기준값 및 채점 파라미터
+# ref    : (F1, F2) 기준값 in Hz (한국어 음성학 연구 성인 평균치)
+# f1_div : F1 허용 오차 divisor (점수 = max(0, 100 - |ΔF1| / f1_div))
+#           → f1_div × 100 Hz 이상 벗어나면 0점
+# f2_div : F2 허용 오차 divisor (동일 방식)
+# f1_w   : F1 가중치 (f1_w + f2_w = 1.0)
+# f2_w   : F2 가중치
+#
+# 설계 근거:
+#   아 - F1 높음(혀 낮음)이 핵심 → F1 가중치 높음, 허용 200Hz
+#   에 - F2 높음이 오/우와 구분 짓는 핵심 → F2 가중치 높음
+#   이 - F2 압도적(2590Hz), 한국어 모음 중 최고 → F2 가중치 최고
+#   오 - F1(490)으로 우(335)와 구분; 155Hz 차이라 허용 150Hz로 타이트하게
+#   우 - 위와 동일 이유로 F1 타이트
+_VOWEL_CONFIG: Dict[str, Dict] = {
+    "아": {"ref": (780, 1230), "f1_div": 2.0, "f2_div": 4.0, "f1_w": 0.65, "f2_w": 0.35},
+    "에": {"ref": (500, 1870), "f1_div": 2.0, "f2_div": 4.5, "f1_w": 0.40, "f2_w": 0.60},
+    "이": {"ref": (310, 2590), "f1_div": 1.5, "f2_div": 5.0, "f1_w": 0.30, "f2_w": 0.70},
+    "오": {"ref": (490,  890), "f1_div": 1.5, "f2_div": 3.0, "f1_w": 0.65, "f2_w": 0.35},
+    "우": {"ref": (335,  840), "f1_div": 1.5, "f2_div": 3.0, "f1_w": 0.65, "f2_w": 0.35},
 }
 
 
@@ -164,17 +171,16 @@ def _extract_formants(y: np.ndarray, sr: int) -> Optional[Tuple[float, float]]:
 def analyze_vowel_pronunciation(y: np.ndarray, sr: int, target_vowel: str) -> Dict[str, Any]:
     """
     단모음 발음 정확도 분석 (LPC 포먼트 기반, 0~100점)
-
-    F1 허용 오차 300Hz, F2 허용 오차 600Hz 기준 선형 감점:
-      score = max(0, 100 - |ΔF1|/3) × 0.5 + max(0, 100 - |ΔF2|/6) × 0.5
+    모음별로 F1/F2 가중치와 허용 오차를 개별 적용.
     """
-    if target_vowel not in _KOREAN_VOWEL_FORMANTS:
+    if target_vowel not in _VOWEL_CONFIG:
         return {
             "score": 0, "grade": "error", "label": "지원하지 않는 모음이에요",
             "measuredF1": None, "measuredF2": None,
         }
 
-    ref_f1, ref_f2 = _KOREAN_VOWEL_FORMANTS[target_vowel]
+    cfg = _VOWEL_CONFIG[target_vowel]
+    ref_f1, ref_f2 = cfg["ref"]
 
     intervals = librosa.effects.split(y, top_db=35)
     if len(intervals) == 0:
@@ -199,9 +205,9 @@ def analyze_vowel_pronunciation(y: np.ndarray, sr: int, target_vowel: str) -> Di
         }
 
     user_f1, user_f2 = formants
-    f1_score = max(0.0, 100 - abs(user_f1 - ref_f1) / 3)   # 300Hz → 0
-    f2_score = max(0.0, 100 - abs(user_f2 - ref_f2) / 6)   # 600Hz → 0
-    score = round(0.5 * f1_score + 0.5 * f2_score)
+    f1_score = max(0.0, 100 - abs(user_f1 - ref_f1) / cfg["f1_div"])
+    f2_score = max(0.0, 100 - abs(user_f2 - ref_f2) / cfg["f2_div"])
+    score = round(cfg["f1_w"] * f1_score + cfg["f2_w"] * f2_score)
 
     if score >= 75:
         grade, label = "good",  "모음 발음이 정확해요"

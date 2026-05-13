@@ -57,7 +57,7 @@ class TTSRequest(BaseModel):
 
 class VowelPracticeRequest(BaseModel):
     s3Url: str
-    targetVowel: str  # "아" | "이" | "우" | "에" | "오" | "애" | "외" | "위" | "으" | "의"
+    targetVowel: str  # "아" | "에" | "이" | "오" | "우"
 
 
 def validate_token(x_api_token: Optional[str]):
