@@ -108,7 +108,7 @@ def generate_free_talk_reply(
     messages.append({"role": "user", "content": user_message})
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         temperature=0.8,
         messages=messages
     )

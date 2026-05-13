@@ -504,7 +504,7 @@ def infer_reference_text(step_content: str, stt_text: str) -> str:
 {"inferredReferenceText": "..."}"""
     user_prompt = f"[연습 맥락 (힌트용)]\n{step_content}\n\n[STT 결과 (발음 교정 기준)]\n{stt_text}"
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         temperature=0.1,
         response_format={"type": "json_object"},
         messages=[
@@ -591,7 +591,7 @@ def generate_scenario_feedback(
 (기준: ≤25% 정상 | warn: 쉬는 구간 많음 | error: 말 막힘 의심)
 """
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         temperature=0.3,
         response_format={"type": "json_object"},
         messages=[
@@ -645,7 +645,7 @@ def generate_reference_feedback(
 (기준: ≤25% 정상 | warn: 쉬는 구간 많음 | error: 말 막힘 의심)
 """
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         temperature=0.3,
         response_format={"type": "json_object"},
         messages=[
@@ -690,7 +690,7 @@ def generate_vowel_feedback(
 {formant_info}
 """
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         temperature=0.3,
         response_format={"type": "json_object"},
         messages=[
