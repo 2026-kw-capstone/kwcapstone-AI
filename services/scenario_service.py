@@ -1,3 +1,4 @@
+import copy
 import json
 import re
 from openai import OpenAI
@@ -189,3 +190,139 @@ step들을 순서대로 이어 읽었을 때 자연스러운 대화 한 장면�
     text = text[start:end+1]
 
     return json.loads(text)
+
+
+def _parse_llm_json(raw: str) -> dict:
+    raw = raw.strip()
+    raw = re.sub(r"^```json\s*", "", raw)
+    raw = re.sub(r"^```\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError(f"JSON 형태를 찾지 못했음. raw={raw}")
+    return json.loads(raw[start:end+1])
+
+
+def regenerate_scenario_from_step(
+    scenario_context: str,
+    goal: str,
+    levels: list,
+    target_level_index: int,
+    target_step_index: int,
+) -> dict:
+    total_levels = len(levels)
+
+    if target_level_index < 0 or target_level_index >= total_levels:
+        raise ValueError(f"targetLevelIndex({target_level_index})가 범위를 벗어났음.")
+    target_steps_count = len(levels[target_level_index].get("steps", []))
+    if target_step_index < 0 or target_step_index >= target_steps_count:
+        raise ValueError(f"targetStepIndex({target_step_index})가 범위를 벗어났음.")
+
+    # ── 확정된 내용 구성 ────────────────────────────────────────────
+    locked_lines = []
+    for li in range(target_level_index + 1):
+        level = levels[li]
+        step_limit = len(level["steps"]) if li < target_level_index else target_step_index
+        if step_limit == 0:
+            continue
+        locked_lines.append(f"\nLevel {li + 1} ({level['levelTitle']}):")
+        for si in range(step_limit):
+            s = level["steps"][si]
+            locked_lines.append(f"  Step {si + 1} - {s['step']}")
+            locked_lines.append(f"    AI 발화: {s['assistantMessage']}")
+            locked_lines.append(f"    사용자 목표: {s['userIntent']}")
+
+    locked_context = "\n".join(locked_lines) if locked_lines else "(없음)"
+
+    # ── 재생성 범위 안내 ─────────────────────────────────────────────
+    regen_lines = []
+    for li in range(target_level_index, total_levels):
+        lv = levels[li]
+        start_si = target_step_index if li == target_level_index else 0
+        count = len(lv["steps"]) - start_si
+        label = f"Step {start_si + 1}부터 끝까지 {count}개" if li == target_level_index else f"전체 {count}개 step"
+        regen_lines.append(f"Level {li + 1} ({lv['levelTitle']}): {label}")
+
+    # ── 출력 형식 예시 구성 ──────────────────────────────────────────
+    output_example: dict = {"regeneratedLevels": []}
+    for li in range(target_level_index, total_levels):
+        lv = levels[li]
+        start_si = target_step_index if li == target_level_index else 0
+        count = len(lv["steps"]) - start_si
+        output_example["regeneratedLevels"].append({
+            "steps": [
+                {"step": "...", "assistantMessage": "...", "userIntent": "..."}
+                for _ in range(count)
+            ]
+        })
+
+    system_prompt = f"""
+너는 언어재활 시나리오 설계 보조자이자 성인 의사소통 훈련용 시나리오 설계 전문가임.
+
+아래 EVA Park 기반 설계 원칙을 반드시 따라야 함:
+{EVA_PARK_PRINCIPLES}
+
+기존 시나리오의 일부 step을 다시 생성해야 함.
+확정된 내용은 절대 변경하지 말고, 지정된 위치부터 새로운 내용을 생성해.
+
+규칙:
+1. 확정된 step들과 자연스럽게 이어지는 내용이어야 함.
+2. 같은 level 내 step 순서는 반드시 실제 상황의 시간 흐름을 따라야 함.
+3. assistantMessage는 반드시 상대방(AI) 역할의 발화이어야 하며, yes/no 질문 절대 금지.
+4. regeneratedLevels 배열의 순서는 요청된 재생성 범위의 level 순서와 정확히 일치해야 함.
+5. 반드시 JSON만 반환. 마크다운 코드블록, 주석, 설명 문장 절대 포함하지 말 것.
+"""
+
+    user_prompt = f"""
+시나리오 상황: {scenario_context}
+사용자 목적: {goal}
+
+[확정된 내용 (변경 불가)]
+{locked_context}
+
+[다시 생성할 범위]
+{chr(10).join(regen_lines)}
+
+반드시 아래 형식의 JSON만 반환 (regeneratedLevels 배열 크기: {total_levels - target_level_index}개):
+{json.dumps(output_example, ensure_ascii=False, indent=2)}
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+
+    raw = response.choices[0].message.content
+    print("LLM REGENERATE RAW RESPONSE:")
+    print(repr(raw))
+
+    result = _parse_llm_json(raw)
+    regen_levels = result.get("regeneratedLevels", [])
+
+    if len(regen_levels) != total_levels - target_level_index:
+        raise ValueError(
+            f"LLM이 반환한 level 수({len(regen_levels)})가 "
+            f"기대값({total_levels - target_level_index})과 다름."
+        )
+
+    # ── 원본 levels에 재생성 결과 병합 ──────────────────────────────
+    updated_levels = copy.deepcopy(levels)
+    for i, regen_level in enumerate(regen_levels):
+        li = target_level_index + i
+        new_steps = regen_level.get("steps", [])
+        if li == target_level_index:
+            updated_levels[li]["steps"] = (
+                updated_levels[li]["steps"][:target_step_index] + new_steps
+            )
+        else:
+            updated_levels[li]["steps"] = new_steps
+
+    return {
+        "scenarioContext": scenario_context,
+        "goal": goal,
+        "levels": updated_levels,
+    }

@@ -5,7 +5,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from config.settings import COLAB_API_TOKEN
-from services.scenario_service import generate_scenario_levels
+from services.scenario_service import generate_scenario_levels, regenerate_scenario_from_step
 from services.audio_service import download_audio_from_s3, preprocess_audio_to_mono_16k_wav
 from services.stt_service import transcribe_audio
 from services.score_service import evaluate_reference_response, evaluate_scenario_response, generate_vowel_feedback
@@ -39,6 +39,14 @@ class ReferencePracticeRequest(BaseModel):
 class FreeTalkRequest(BaseModel):
     userMessage: str
     chatHistory: Optional[list] = None
+
+
+class RegenerateStepRequest(BaseModel):
+    scenarioContext: str
+    goal: str
+    levels: list
+    targetLevelIndex: int
+    targetStepIndex: int
 
 
 class ScenarioPracticeRequest(BaseModel):
@@ -110,6 +118,28 @@ def generate_scenario(req: ScenarioRequest, x_api_token: Optional[str] = Header(
             "success": True,
             "data": result
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/regenerate-scenario-step")
+def regenerate_step(req: RegenerateStepRequest, x_api_token: Optional[str] = Header(default=None)):
+    validate_token(x_api_token)
+
+    try:
+        result = regenerate_scenario_from_step(
+            scenario_context=req.scenarioContext,
+            goal=req.goal,
+            levels=req.levels,
+            target_level_index=req.targetLevelIndex,
+            target_step_index=req.targetStepIndex,
+        )
+        return {
+            "success": True,
+            "data": result,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
