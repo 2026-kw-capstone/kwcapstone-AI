@@ -543,41 +543,82 @@ def build_pronunciation_error_for_llm(
     return "\n".join(lines) if lines else "오류 없음"
 
 
-def generate_scenario_feedback(
+def generate_meaning_delivery_feedback(
     step_content: str,
     stt_text: str,
-    pronunciation_error_summary: str,
-    speech_rate: Dict[str, Any],
-    pause_ratio: Dict[str, Any],
+    reference_text: str,
 ) -> Dict[str, Any]:
-    """발음 오류·음성 분석·연습 맥락을 종합해 의미 전달률과 피드백을 JSON으로 반환."""
+    """시나리오 맥락·STT 결과·추정 참조 문장을 종합해 의미 전달률과 피드백을 JSON으로 반환."""
     system_prompt = """\
 너는 성인 언어 재활 보조 평가자야.
-아래 정보를 종합해서 의미 전달률과 피드백을 JSON으로만 반환해.
+아래 정보를 바탕으로 의미 전달률 점수와 피드백을 JSON으로만 반환해.
 
 반환 형식:
 {
   "meaningDeliveryScore": <0~100 정수>,
-  "feedback": "<2~3문장>"
+  "meaningDeliveryFeedback": "<2~3문장>"
 }
 
+평가 기준 (의미 전달 중심):
+- 핵심 정보(대상, 요청 내용, 수량, 장소, 시간, 감정 등)가 STT 결과에 포함되어 있는가
+- 사용자가 말하려 한 문장(추정 참조 텍스트)과 STT 결과가 의미 면에서 얼마나 일치하는가
+- 문법적 완성도보다 상대방이 의도를 이해할 수 있는지를 우선 평가
+
 피드백 작성 규칙:
-- 의미 전달 여부 + 발음 오류 + 조음 속도/pause 비율을 함께 고려해
-- 잘한 점 먼저, 개선점은 구체적으로 뒤에
+- 전달된 의미 요소(잘 전달된 핵심 내용)를 먼저 언급
+- 전달되지 않았거나 불명확한 의미 요소가 있으면 구체적으로 언급
 - 따뜻하고 격려하는 톤, 2~3문장으로 짧게
 """
-    sps        = speech_rate.get("syllablesPerSecond", 0)
-    sr_grade   = speech_rate.get("grade", "")
-    sr_score   = speech_rate.get("score", 0)
-    pause_pct  = pause_ratio.get("pausePercent", 0)
-    pause_grade = pause_ratio.get("grade", "")
-
     user_prompt = f"""\
 [연습 맥락]
 {step_content}
 
-[STT 결과]
+[사용자 발화 (STT 결과)]
 {stt_text}
+
+[발음 오류 교정 후 추정 문장]
+{reference_text}
+"""
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0.3,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+    return json.loads(response.choices[0].message.content)
+
+
+def generate_scenario_pronunciation_feedback(
+    reference_text: str,
+    pronunciation_error_summary: str,
+    speech_rate: Dict[str, Any],
+    pause_ratio: Dict[str, Any],
+) -> Dict[str, Any]:
+    """발음 오류·음성 분석을 기반으로 발음 피드백을 JSON으로 반환."""
+    system_prompt = """\
+너는 성인 언어 재활 보조 평가자야.
+아래 발음 분석 정보를 바탕으로 발음 피드백을 JSON으로만 반환해.
+
+반환 형식:
+{"pronunciationFeedback": "<2~3문장>"}
+
+피드백 작성 규칙:
+- 발음 오류 위치와 유형 + 조음 속도 + pause 비율을 함께 고려해
+- 잘한 점 먼저, 개선점은 구체적으로 뒤에
+- 따뜻하고 격려하는 톤, 2~3문장으로 짧게
+"""
+    sps         = speech_rate.get("syllablesPerSecond", 0)
+    sr_grade    = speech_rate.get("grade", "")
+    sr_score    = speech_rate.get("score", 0)
+    pause_pct   = pause_ratio.get("pausePercent", 0)
+    pause_grade = pause_ratio.get("grade", "")
+
+    user_prompt = f"""\
+[추정 발화 문장]
+{reference_text}
 
 [발음 오류 분석]
 {pronunciation_error_summary}
@@ -808,21 +849,27 @@ def evaluate_scenario_response(
         sum(item["score"] for item in word_analysis) / len(word_analysis), 2
     ) if word_analysis else 0.0
 
-    # ── Step 3: LLM 피드백 (발음 오류 + 음성 분석 포함) ─────────────────────
+    # ── Step 3: 의미 전달률 피드백 (맥락 + STT + 추정 참조 문장) ───────────────
+    meaning_result = generate_meaning_delivery_feedback(
+        step_content=step_content,
+        stt_text=stt_text,
+        reference_text=reference_text,
+    )
+    meaning_delivery_score = clamp(safe_int(meaning_result.get("meaningDeliveryScore", 0)), 0, 100)
+    meaning_delivery_feedback = meaning_result.get("meaningDeliveryFeedback", "").strip()
+
+    # ── Step 4: 발음 피드백 (발음 오류 + 음성 분석) ──────────────────────────
     pronunciation_error_summary = build_pronunciation_error_for_llm(word_analysis, insert_feedbacks)
     speech_rate = (voice_result or {}).get("speechRate", {})
     pause_ratio = (voice_result or {}).get("silenceRatio", {})
 
-    llm_result = generate_scenario_feedback(
-        step_content=step_content,
-        stt_text=stt_text,
+    pron_result = generate_scenario_pronunciation_feedback(
+        reference_text=reference_text,
         pronunciation_error_summary=pronunciation_error_summary,
         speech_rate=speech_rate,
         pause_ratio=pause_ratio,
     )
-
-    meaning_delivery_score = clamp(safe_int(llm_result.get("meaningDeliveryScore", 0), 0), 0, 100)
-    feedback = llm_result.get("feedback", "").strip()
+    pronunciation_feedback = pron_result.get("pronunciationFeedback", "").strip()
 
     simplified_word_analysis = [
         {"refChar": item["refChar"], "hypChar": item["hypChar"], "grade": item["grade"]}
@@ -835,6 +882,7 @@ def evaluate_scenario_response(
         "acousticText": acoustic_text,
         "pronunciationScore": round(float(avg_word_score), 2),
         "meaningDeliveryScore": meaning_delivery_score,
-        "feedback": feedback,
+        "meaningDeliveryFeedback": meaning_delivery_feedback,
+        "pronunciationFeedback": pronunciation_feedback,
         "wordAnalysis": simplified_word_analysis,
     }
