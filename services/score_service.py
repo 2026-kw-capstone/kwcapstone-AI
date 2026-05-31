@@ -1,4 +1,5 @@
 import re
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from jiwer import wer, cer
 from openai import OpenAI
@@ -504,7 +505,7 @@ def infer_reference_text(step_content: str, stt_text: str) -> str:
 {"inferredReferenceText": "..."}"""
     user_prompt = f"[연습 맥락 (힌트용)]\n{step_content}\n\n[STT 결과 (발음 교정 기준)]\n{stt_text}"
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         temperature=0.1,
         response_format={"type": "json_object"},
         messages=[
@@ -580,7 +581,7 @@ def generate_meaning_delivery_feedback(
 {reference_text}
 """
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         temperature=0.3,
         response_format={"type": "json_object"},
         messages=[
@@ -632,7 +633,7 @@ def generate_scenario_pronunciation_feedback(
 (기준: ≤25% 정상 | warn: 쉬는 구간 많음 | error: 말 막힘 의심)
 """
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         temperature=0.3,
         response_format={"type": "json_object"},
         messages=[
@@ -686,7 +687,7 @@ def generate_reference_feedback(
 (기준: ≤25% 정상 | warn: 쉬는 구간 많음 | error: 말 막힘 의심)
 """
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         temperature=0.3,
         response_format={"type": "json_object"},
         messages=[
@@ -731,7 +732,7 @@ def generate_vowel_feedback(
 {formant_info}
 """
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         temperature=0.3,
         response_format={"type": "json_object"},
         messages=[
@@ -849,26 +850,30 @@ def evaluate_scenario_response(
         sum(item["score"] for item in word_analysis) / len(word_analysis), 2
     ) if word_analysis else 0.0
 
-    # ── Step 3: 의미 전달률 피드백 (맥락 + STT + 추정 참조 문장) ───────────────
-    meaning_result = generate_meaning_delivery_feedback(
-        step_content=step_content,
-        stt_text=stt_text,
-        reference_text=reference_text,
-    )
-    meaning_delivery_score = clamp(safe_int(meaning_result.get("meaningDeliveryScore", 0)), 0, 100)
-    meaning_delivery_feedback = meaning_result.get("meaningDeliveryFeedback", "").strip()
-
-    # ── Step 4: 발음 피드백 (발음 오류 + 음성 분석) ──────────────────────────
+    # ── Step 3 & 4: 의미 전달률 + 발음 피드백 (병렬 실행) ───────────────────
     pronunciation_error_summary = build_pronunciation_error_for_llm(word_analysis, insert_feedbacks)
     speech_rate = (voice_result or {}).get("speechRate", {})
     pause_ratio = (voice_result or {}).get("silenceRatio", {})
 
-    pron_result = generate_scenario_pronunciation_feedback(
-        reference_text=reference_text,
-        pronunciation_error_summary=pronunciation_error_summary,
-        speech_rate=speech_rate,
-        pause_ratio=pause_ratio,
-    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_meaning = executor.submit(
+            generate_meaning_delivery_feedback,
+            step_content=step_content,
+            stt_text=stt_text,
+            reference_text=reference_text,
+        )
+        future_pron = executor.submit(
+            generate_scenario_pronunciation_feedback,
+            reference_text=reference_text,
+            pronunciation_error_summary=pronunciation_error_summary,
+            speech_rate=speech_rate,
+            pause_ratio=pause_ratio,
+        )
+        meaning_result = future_meaning.result()
+        pron_result = future_pron.result()
+
+    meaning_delivery_score = clamp(safe_int(meaning_result.get("meaningDeliveryScore", 0)), 0, 100)
+    meaning_delivery_feedback = meaning_result.get("meaningDeliveryFeedback", "").strip()
     pronunciation_feedback = pron_result.get("pronunciationFeedback", "").strip()
 
     simplified_word_analysis = [

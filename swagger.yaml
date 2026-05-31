@@ -1,0 +1,759 @@
+openapi: 3.0.3
+info:
+  title: AI Speech Pipeline API
+  description: |
+    성인 언어재활 훈련을 위한 AI 음성 파이프라인 API.
+    시나리오 생성, 발음 평가, 자유 대화, TTS/STT 기능을 제공합니다.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000
+    description: 로컬 개발 서버
+
+security:
+  - ApiTokenAuth: []
+
+components:
+  securitySchemes:
+    ApiTokenAuth:
+      type: apiKey
+      in: header
+      name: x-api-token
+      description: |
+        환경변수 COLAB_API_TOKEN에 설정된 값. 미설정 시 인증 검사를 건너뜁니다.
+
+  schemas:
+    # ── 공통 ──────────────────────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+          description: 오류 메시지
+      example:
+        detail: "Internal server error"
+
+    WordAnalysisItem:
+      type: object
+      description: 음절 단위 발음 분석 결과
+      properties:
+        refChar:
+          type: string
+          description: 목표 음절
+          example: "안"
+        hypChar:
+          type: string
+          description: 인식된 음절 (누락 시 빈 문자열)
+          example: "아"
+        grade:
+          type: string
+          enum: [good, warn, error]
+          description: "good: 정확 / warn: 부분 오류 / error: 누락·심각 오류"
+      required: [refChar, hypChar, grade]
+
+    SpeechRate:
+      type: object
+      description: 조음 속도 분석 결과
+      properties:
+        syllablesPerSecond:
+          type: number
+          format: float
+          description: 초당 음절 수 (sps)
+          example: 5.2
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          example: 95
+        grade:
+          type: string
+          enum: [good, slow, fast]
+          description: "good: 4.0–7.0 sps 정상 / slow: 느림 / fast: 빠름"
+        label:
+          type: string
+          example: "적절한 속도예요"
+      required: [syllablesPerSecond, score, grade, label]
+
+    SilenceRatio:
+      type: object
+      description: 침묵(Pause) 비율 분석 결과
+      properties:
+        pausePercent:
+          type: number
+          format: float
+          description: 전체 발화 중 임상적 유의 pause(≥250ms) 비율(%)
+          example: 18.5
+        grade:
+          type: string
+          enum: [good, warn, error]
+          description: "good: ≤25% / warn: 25–45% / error: >45% (말 막힘 의심)"
+        label:
+          type: string
+          example: "자연스러운 흐름이에요"
+      required: [pausePercent, grade, label]
+
+    VoiceAnalysis:
+      type: object
+      description: 음성 분석 결과 (조음 속도 + 침묵 비율)
+      properties:
+        speechRate:
+          $ref: '#/components/schemas/SpeechRate'
+        silenceRatio:
+          $ref: '#/components/schemas/SilenceRatio'
+      required: [speechRate, silenceRatio]
+
+    ScenarioStep:
+      type: object
+      properties:
+        step:
+          type: string
+          description: 해당 step에서 사용자가 연습할 행동 요약 (5~15자)
+          example: "인적 사항 말하기"
+        assistantMessage:
+          type: string
+          description: 상대방(AI)이 사용자에게 건네는 발화
+          example: "성함이랑 생년월일이 어떻게 되세요?"
+        userIntent:
+          type: string
+          description: 이 step에서 사용자가 전달해야 할 핵심 의미 안내
+          example: "이름과 생년월일을 정확하게 말해 의미를 전달해 보세요."
+      required: [step, assistantMessage, userIntent]
+
+    ScenarioLevel:
+      type: object
+      properties:
+        levelTitle:
+          type: string
+          description: 해당 레벨의 핵심 상황 요약 (5~15자)
+          example: "병원 접수하기"
+        levelDescription:
+          type: string
+          description: 해당 레벨에서 연습할 내용 설명 (1~2문장)
+          example: "인적 사항과 기본 증상을 간단하게 말하는 연습입니다."
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScenarioStep'
+          minItems: 3
+          maxItems: 3
+      required: [levelTitle, levelDescription, steps]
+
+    ScenarioData:
+      type: object
+      properties:
+        scenarioContext:
+          type: string
+          description: 시나리오 상황
+          example: "동네 카페에서 음료 주문하기"
+        goal:
+          type: string
+          description: 사용자 목적
+          example: "원하는 음료를 직원에게 주문하기"
+        levels:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScenarioLevel'
+          minItems: 3
+          maxItems: 3
+      required: [scenarioContext, goal, levels]
+
+    ChatHistoryItem:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+      required: [role, content]
+
+paths:
+  # ── 헬스 체크 ───────────────────────────────────────────────────────────────
+  /health:
+    get:
+      summary: 서버 상태 확인
+      tags: [System]
+      security: []
+      responses:
+        '200':
+          description: 서버 정상
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+
+  # ── STT ─────────────────────────────────────────────────────────────────────
+  /stt:
+    post:
+      summary: 음성 → 텍스트 변환 (STT)
+      description: S3에 저장된 음성 파일을 다운로드해 Whisper로 텍스트 변환합니다.
+      tags: [Audio]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                s3Url:
+                  type: string
+                  description: 음성 파일의 S3 URL
+                  example: "https://bucket.s3.amazonaws.com/audio/sample.m4a"
+              required: [s3Url]
+      responses:
+        '200':
+          description: 변환 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  sttText:
+                    type: string
+                    description: 변환된 텍스트
+                    example: "안녕하세요 아메리카노 한 잔 주세요"
+        '401':
+          description: 인증 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 서버 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── TTS ─────────────────────────────────────────────────────────────────────
+  /tts:
+    post:
+      summary: 텍스트 → 음성 변환 (TTS)
+      description: OpenAI TTS API로 텍스트를 MP3 오디오로 변환합니다.
+      tags: [Audio]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                  description: 변환할 텍스트
+                  example: "성함이랑 생년월일이 어떻게 되세요?"
+                voice:
+                  type: string
+                  enum: [alloy, echo, fable, onyx, nova, shimmer]
+                  default: nova
+                  description: TTS 음성 종류
+                speed:
+                  type: number
+                  format: float
+                  minimum: 0.25
+                  maximum: 4.0
+                  default: 1.0
+                  description: 재생 속도
+              required: [text]
+      responses:
+        '200':
+          description: 변환 성공 — MP3 바이너리 반환
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: 인증 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 서버 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── 시나리오 생성 ────────────────────────────────────────────────────────────
+  /generate-scenario:
+    post:
+      summary: 훈련 시나리오 생성
+      description: |
+        시나리오 상황과 목적을 입력하면 EVA Park 설계 원칙에 따라
+        3개 레벨 × 3개 step의 훈련 시나리오를 생성합니다.
+      tags: [Scenario]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scenarioContext:
+                  type: string
+                  description: 시나리오 상황
+                  example: "동네 카페에서 음료 주문하기"
+                goal:
+                  type: string
+                  description: 사용자 목적
+                  example: "원하는 음료를 직원에게 주문하기"
+              required: [scenarioContext, goal]
+      responses:
+        '200':
+          description: 생성 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ScenarioData'
+        '401':
+          description: 인증 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 서버 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── 시나리오 step 재생성 ─────────────────────────────────────────────────────
+  /regenerate-scenario-step:
+    post:
+      summary: 특정 step부터 시나리오 재생성
+      description: |
+        지정한 level·step부터 마지막 step까지만 다시 생성합니다.
+        그 이전 level과 step들은 원본 그대로 유지됩니다.
+
+        **인덱스는 0-based입니다.**
+        - `targetLevelIndex: 0` → Level 1
+        - `targetStepIndex: 1` → 해당 Level의 Step 2
+
+        예시) `targetLevelIndex=1, targetStepIndex=1` 인 경우:
+        - 유지: Level 1 전체, Level 2의 Step 1
+        - 재생성: Level 2의 Step 2~3, Level 3 전체
+      tags: [Scenario]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scenarioContext:
+                  type: string
+                  example: "동네 카페에서 음료 주문하기"
+                goal:
+                  type: string
+                  example: "원하는 음료를 직원에게 주문하기"
+                levels:
+                  type: array
+                  description: 현재 전체 levels 배열 (generate-scenario 응답의 data.levels)
+                  items:
+                    $ref: '#/components/schemas/ScenarioLevel'
+                  minItems: 3
+                  maxItems: 3
+                targetLevelIndex:
+                  type: integer
+                  minimum: 0
+                  maximum: 2
+                  description: 재생성을 시작할 level의 인덱스 (0-based)
+                  example: 1
+                targetStepIndex:
+                  type: integer
+                  minimum: 0
+                  maximum: 2
+                  description: 재생성을 시작할 step의 인덱스 (0-based, 해당 level 내)
+                  example: 1
+              required: [scenarioContext, goal, levels, targetLevelIndex, targetStepIndex]
+      responses:
+        '200':
+          description: 재생성 성공 — 병합된 전체 levels 반환
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ScenarioData'
+        '400':
+          description: 잘못된 인덱스 범위
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: "targetStepIndex(5)가 범위를 벗어났음."
+        '401':
+          description: 인증 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 서버 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── 따라 말하기 연습 ─────────────────────────────────────────────────────────
+  /practice/reference:
+    post:
+      summary: 따라 말하기 연습 평가
+      description: |
+        목표 문장을 따라 말한 음성을 평가합니다.
+        G2P 기반 음소 분석으로 음절 단위 발음 점수를 산출하고
+        LLM이 발음 오류·조음 속도·침묵 비율을 종합해 피드백을 생성합니다.
+      tags: [Practice]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                s3Url:
+                  type: string
+                  description: 음성 파일의 S3 URL
+                  example: "https://bucket.s3.amazonaws.com/audio/sample.m4a"
+                referenceText:
+                  type: string
+                  description: 따라 말하기 목표 문장
+                  example: "안녕하세요 아메리카노 한 잔 주세요"
+              required: [s3Url, referenceText]
+      responses:
+        '200':
+          description: 평가 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  referenceText:
+                    type: string
+                    description: 목표 문장
+                    example: "안녕하세요 아메리카노 한 잔 주세요"
+                  sttText:
+                    type: string
+                    description: STT 변환 결과 (원본)
+                    example: "아녕하세오 아메리카노 한 잔 주에요"
+                  acousticText:
+                    type: string
+                    nullable: true
+                    description: wav2vec2 음향 인식 결과 (미설치 시 null)
+                  pronunciationScore:
+                    type: number
+                    format: float
+                    minimum: 0
+                    maximum: 100
+                    description: 음절 단위 평균 발음 점수
+                    example: 82.5
+                  feedback:
+                    type: string
+                    description: LLM 생성 발음 피드백
+                    example: "전반적으로 또렷하게 잘 발음했어요. 받침 부분을 조금 더 또렷하게 마무리해보세요."
+                  wordAnalysis:
+                    type: array
+                    description: 음절 단위 발음 분석 결과 목록
+                    items:
+                      $ref: '#/components/schemas/WordAnalysisItem'
+                  voiceAnalysis:
+                    $ref: '#/components/schemas/VoiceAnalysis'
+        '401':
+          description: 인증 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 서버 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── 자유 대화 ────────────────────────────────────────────────────────────────
+  /chat/free-talk:
+    post:
+      summary: 자유 대화
+      description: |
+        사용자 메시지에 대해 AI가 따뜻한 대화 응답과 짧은 격려 피드백을 반환합니다.
+        `chatHistory`를 전달하면 최근 3쌍의 대화 맥락을 반영합니다.
+      tags: [Chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userMessage:
+                  type: string
+                  description: 사용자 발화 텍스트
+                  example: "오늘 날씨가 좋네요"
+                chatHistory:
+                  type: array
+                  nullable: true
+                  description: 이전 대화 기록 (선택, 최근 3쌍까지 반영)
+                  items:
+                    $ref: '#/components/schemas/ChatHistoryItem'
+              required: [userMessage]
+      responses:
+        '200':
+          description: 응답 생성 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  mode:
+                    type: string
+                    example: "free_talk"
+                  userMessage:
+                    type: string
+                    description: 요청에서 받은 사용자 메시지 (echo)
+                    example: "오늘 날씨가 좋네요"
+                  aiReply:
+                    type: string
+                    description: AI 대화 응답 (1~3문장)
+                    example: "맞아요, 오늘 정말 화창하네요! 산책하기 딱 좋은 날씨 같아요."
+                  aiFeedback:
+                    type: string
+                    description: 짧은 격려 피드백 (1문장)
+                    example: "자연스럽게 잘 표현했어요!"
+                  assistantMessageForHistory:
+                    type: string
+                    description: 다음 요청의 chatHistory에 담을 assistant 메시지
+                    example: "맞아요, 오늘 정말 화창하네요! 산책하기 딱 좋은 날씨 같아요."
+        '401':
+          description: 인증 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 서버 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── 단모음 연습 ──────────────────────────────────────────────────────────────
+  /practice/vowel:
+    post:
+      summary: 단모음 발음 연습 평가
+      description: |
+        단모음(아·에·이·오·우) 발음 음성을 LPC 포먼트(F1/F2) 분석으로 평가합니다.
+        모음별 기준 포먼트와의 오차를 가중 평균하여 0~100점을 산출합니다.
+      tags: [Practice]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                s3Url:
+                  type: string
+                  description: 음성 파일의 S3 URL
+                  example: "https://bucket.s3.amazonaws.com/audio/vowel.m4a"
+                targetVowel:
+                  type: string
+                  enum: ["아", "에", "이", "오", "우"]
+                  description: 연습 목표 단모음
+                  example: "아"
+              required: [s3Url, targetVowel]
+      responses:
+        '200':
+          description: 평가 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  targetVowel:
+                    type: string
+                    example: "아"
+                  pronunciationScore:
+                    type: integer
+                    minimum: 0
+                    maximum: 100
+                    description: 포먼트 기반 발음 정확도 점수
+                    example: 88
+                  pronunciationGrade:
+                    type: string
+                    enum: [good, warn, error]
+                    description: "good: ≥75 / warn: 50~74 / error: <50"
+                  pronunciationLabel:
+                    type: string
+                    description: 발음 정확도 설명 레이블
+                    example: "모음 발음이 정확해요"
+                  feedback:
+                    type: string
+                    description: LLM 생성 피드백 (2문장)
+                    example: "아 모음을 힘차고 정확하게 발음했어요. 입을 조금 더 크게 벌리면 더욱 또렷해질 거예요."
+        '401':
+          description: 인증 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 서버 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── 시나리오 연습 ────────────────────────────────────────────────────────────
+  /practice/scenario:
+    post:
+      summary: 시나리오 연습 평가
+      description: |
+        시나리오 step에서 사용자의 발화를 평가합니다.
+
+        **처리 흐름:**
+        1. STT로 발화 텍스트 추출
+        2. LLM으로 발음 오류를 보정한 참조 텍스트(referenceText) 추론
+        3. G2P 음소 분석으로 음절 단위 발음 점수 산출
+        4. **의미 전달률 평가**: 연습 맥락·STT·참조 텍스트를 종합해 핵심 의미 요소 전달 여부 평가
+        5. **발음 피드백**: 발음 오류·조음 속도·침묵 비율 종합 평가
+      tags: [Practice]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                s3Url:
+                  type: string
+                  description: 음성 파일의 S3 URL
+                  example: "https://bucket.s3.amazonaws.com/audio/scenario.m4a"
+                levelTitle:
+                  type: string
+                  description: 현재 level 제목
+                  example: "카페 주문하기"
+                step:
+                  type: string
+                  description: 현재 step 이름
+                  example: "음료 종류 말하기"
+                assistantMessage:
+                  type: string
+                  description: AI가 사용자에게 건넨 질문/발화
+                  example: "어떤 음료로 드릴까요?"
+                userIntent:
+                  type: string
+                  description: 이 step에서 사용자가 전달해야 할 핵심 의미
+                  example: "원하는 음료 종류를 말해 직원이 이해할 수 있게 전달해 보세요."
+              required: [s3Url, levelTitle, step, assistantMessage, userIntent]
+      responses:
+        '200':
+          description: 평가 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  levelTitle:
+                    type: string
+                    example: "카페 주문하기"
+                  step:
+                    type: string
+                    example: "음료 종류 말하기"
+                  referenceText:
+                    type: string
+                    description: 발음 오류 보정 후 LLM이 추론한 참조 문장
+                    example: "아메리카노 주세요"
+                  sttText:
+                    type: string
+                    description: STT 변환 결과 (원본)
+                    example: "아메리카노 주에요"
+                  acousticText:
+                    type: string
+                    nullable: true
+                    description: wav2vec2 음향 인식 결과 (미설치 시 null)
+                  pronunciationScore:
+                    type: number
+                    format: float
+                    minimum: 0
+                    maximum: 100
+                    description: 음절 단위 평균 발음 점수
+                    example: 91.0
+                  meaningDeliveryScore:
+                    type: integer
+                    minimum: 0
+                    maximum: 100
+                    description: 핵심 의미 요소 전달률 점수
+                    example: 95
+                  meaningDeliveryFeedback:
+                    type: string
+                    description: 의미 전달에 대한 LLM 피드백 (2~3문장)
+                    example: "원하는 음료 종류를 잘 전달했어요. 수량 정보도 함께 말하면 더 명확하게 전달될 거예요."
+                  pronunciationFeedback:
+                    type: string
+                    description: 발음에 대한 LLM 피드백 (2~3문장)
+                    example: "전반적으로 또렷하게 발음했어요. 받침 부분을 조금 더 또렷하게 마무리해보세요."
+                  wordAnalysis:
+                    type: array
+                    description: 음절 단위 발음 분석 결과 목록
+                    items:
+                      $ref: '#/components/schemas/WordAnalysisItem'
+                  voiceAnalysis:
+                    $ref: '#/components/schemas/VoiceAnalysis'
+        '401':
+          description: 인증 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 서버 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+tags:
+  - name: System
+    description: 서버 상태 확인
+  - name: Audio
+    description: 음성 변환 (STT / TTS)
+  - name: Scenario
+    description: 훈련 시나리오 생성 및 관리
+  - name: Practice
+    description: 발음·의미 전달 연습 평가
+  - name: Chat
+    description: 자유 대화
