@@ -6,6 +6,8 @@ from pydantic import BaseModel
 
 from config.settings import COLAB_API_TOKEN
 from services.scenario_service import generate_scenario_levels, regenerate_scenario_from_step
+from services.scenario_agent_service import start_session_turn, advance_session_turn
+from services import session_store
 from services.audio_service import download_audio_from_s3, preprocess_audio_to_mono_16k_wav
 from services.stt_service import transcribe_audio
 from services.score_service import evaluate_reference_response, evaluate_scenario_response, generate_vowel_feedback
@@ -55,6 +57,17 @@ class ScenarioPracticeRequest(BaseModel):
     step: str
     assistantMessage: str
     userIntent: str
+
+
+class ScenarioSessionStartRequest(BaseModel):
+    scenarioContext: str
+    goal: str
+    maxSteps: int = 9
+
+
+class ScenarioSessionRespondRequest(BaseModel):
+    sessionId: str
+    s3Url: str
 
 
 class TTSRequest(BaseModel):
@@ -257,3 +270,113 @@ def practice_scenario(req: ScenarioPracticeRequest, x_api_token: Optional[str] =
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Agent 기반 적응형 시나리오 세션 ─────────────────────────────────────────
+@app.post("/scenario/session/start")
+def scenario_session_start(
+    req: ScenarioSessionStartRequest,
+    x_api_token: Optional[str] = Header(default=None),
+):
+    """새 훈련 세션을 만들고 agent가 첫 step을 동적으로 생성한다."""
+    validate_token(x_api_token)
+
+    try:
+        session = session_store.create_session(
+            scenario_context=req.scenarioContext,
+            goal=req.goal,
+            max_steps=req.maxSteps,
+        )
+        turn = start_session_turn(session)
+        session_store.save_session(session)
+
+        return {
+            "success": True,
+            "sessionId": session["sessionId"],
+            "status": session["status"],
+            "currentLevel": session["currentLevel"],
+            "stepInLevel": session["currentStepInLevel"],
+            "stepsCompleted": session["stepsCompleted"],
+            "maxSteps": session["maxSteps"],
+            "step": turn.get("nextStep"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/scenario/session/respond")
+def scenario_session_respond(
+    req: ScenarioSessionRespondRequest,
+    x_api_token: Optional[str] = Header(default=None),
+):
+    """사용자 음성 답변을 받아 채점하고, agent가 다음 step을 결정한다."""
+    validate_token(x_api_token)
+
+    session = session_store.get_session(req.sessionId)
+    if session is None:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없음 (만료되었거나 잘못된 sessionId).")
+    if session["status"] != "active":
+        raise HTTPException(status_code=400, detail="이미 종료된 세션임.")
+    if not session.get("currentStep"):
+        raise HTTPException(status_code=400, detail="현재 답해야 할 step이 없음.")
+
+    raw_path = os.path.join(INPUT_DIR, "scenario_session_input_audio")
+    wav_path = os.path.join(OUTPUT_DIR, "scenario_session_input.wav")
+
+    try:
+        download_audio_from_s3(req.s3Url, raw_path)
+        preprocess_audio_to_mono_16k_wav(raw_path, wav_path)
+        stt_text = transcribe_audio(wav_path)
+
+        voice_result = analyze_voice(wav_path, stt_text)
+
+        turn = advance_session_turn(
+            session=session,
+            stt_text=stt_text,
+            audio_path=wav_path,
+            voice_result=voice_result,
+        )
+        session_store.save_session(session)
+
+        evaluation = turn.get("lastEvaluation", {})
+        return {
+            "success": True,
+            "sessionId": session["sessionId"],
+            "status": session["status"],
+            "sttText": stt_text,
+            "evaluation": {
+                "pronunciationScore": evaluation.get("pronunciationScore"),
+                "meaningDeliveryScore": evaluation.get("meaningDeliveryScore"),
+                "pronunciationFeedback": evaluation.get("pronunciationFeedback"),
+                "meaningDeliveryFeedback": evaluation.get("meaningDeliveryFeedback"),
+                "wordAnalysis": evaluation.get("wordAnalysis"),
+            },
+            "voiceAnalysis": voice_result,
+            "difficulty": turn.get("difficulty"),
+            "difficultyReason": turn.get("difficultyReason"),
+            "stepsCompleted": session["stepsCompleted"],
+            "maxSteps": session["maxSteps"],
+            "currentLevel": session["currentLevel"],
+            "stepInLevel": session["currentStepInLevel"],
+            "nextStep": turn.get("nextStep"),
+            "closingMessage": turn.get("closingMessage"),
+            "finished": turn.get("finished", False),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/scenario/session/{session_id}")
+def scenario_session_get(
+    session_id: str,
+    x_api_token: Optional[str] = Header(default=None),
+):
+    """세션 상태와 진행 히스토리를 조회한다."""
+    validate_token(x_api_token)
+
+    session = session_store.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없음.")
+    return {"success": True, **session}
