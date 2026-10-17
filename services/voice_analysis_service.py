@@ -20,7 +20,9 @@ def analyze_speech_rate(y: np.ndarray, sr: int, stt_text: str) -> Dict[str, Any]
     if syllable_count == 0:
         return {"syllablesPerSecond": 0.0, "score": 0, "grade": "slow", "label": "측정 불가"}
 
-    intervals = librosa.effects.split(y, top_db=35)
+    # librosa's relative dB threshold can label an all-zero signal as voiced.
+    intervals = (np.empty((0, 2), dtype=int) if not len(y) or not np.any(y)
+                 else librosa.effects.split(y, top_db=35))
     voiced_duration = sum((end - start) / sr for start, end in intervals)
 
     if voiced_duration <= 0:
@@ -66,7 +68,9 @@ def analyze_silence_ratio(y: np.ndarray, sr: int) -> Dict[str, Any]:
     if total_duration <= 0:
         return {"pausePercent": 0.0, "grade": "good", "label": "자연스러운 흐름이에요"}
 
-    intervals = librosa.effects.split(y, top_db=35)
+    # librosa's relative dB threshold can label an all-zero signal as voiced.
+    intervals = (np.empty((0, 2), dtype=int) if not len(y) or not np.any(y)
+                 else librosa.effects.split(y, top_db=35))
 
     if len(intervals) == 0:
         pause_duration = total_duration
@@ -182,7 +186,9 @@ def analyze_vowel_pronunciation(y: np.ndarray, sr: int, target_vowel: str) -> Di
     cfg = _VOWEL_CONFIG[target_vowel]
     ref_f1, ref_f2 = cfg["ref"]
 
-    intervals = librosa.effects.split(y, top_db=35)
+    # librosa's relative dB threshold can label an all-zero signal as voiced.
+    intervals = (np.empty((0, 2), dtype=int) if not len(y) or not np.any(y)
+                 else librosa.effects.split(y, top_db=35))
     if len(intervals) == 0:
         return {
             "score": 0, "grade": "error", "label": "발성이 감지되지 않았어요",

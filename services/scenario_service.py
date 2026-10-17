@@ -1,10 +1,31 @@
 import copy
+import logging
+import time
+from contextvars import ContextVar
 import json
 import re
 from openai import OpenAI
 from config.settings import OPENAI_API_KEY
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY or "not-configured", timeout=20.0, max_retries=0)
+
+_scenario_trace = ContextVar("scenario_trace", default=None)
+
+
+def _scenario_completion(**kwargs):
+    trace = _scenario_trace.get()
+    started = time.monotonic()
+    if trace is not None:
+        trace["model_calls"] += 1
+    try:
+        response = client.chat.completions.create(**kwargs)
+        tokens = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+        if trace is not None:
+            trace["tokens"] += tokens
+        return response
+    finally:
+        logging.getLogger(__name__).info("scenario_generation model_calls=1 elapsed_ms=%.2f", (time.monotonic()-started)*1000)
+
 
 EVA_PARK_PRINCIPLES = """
 [EVA Park 기반 시나리오 설계 원칙]
@@ -35,7 +56,10 @@ EVA_PARK_PRINCIPLES = """
 """
 
 
-def generate_scenario_levels(scenario_context: str, goal: str) -> dict:
+def generate_scenario_levels(scenario_context: str, goal: str, learner_key=None) -> dict:
+    if learner_key and learner_key.strip():
+        return _personalized_design(learner_key, scenario_context, goal,
+                                    lambda: generate_scenario_levels(scenario_context, goal))
     system_prompt = f"""
 너는 언어재활 시나리오 설계 보조자이자 성인 의사소통 훈련용 시나리오 설계 전문가임.
 
@@ -163,7 +187,7 @@ step들을 순서대로 이어 읽었을 때 자연스러운 대화 한 장면�
 시간 역행(이미 완료된 단계를 뒤 step에서 다시 다루는 것)은 절대 허용되지 않음.
 """
 
-    response = client.chat.completions.create(
+    response = _scenario_completion(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": system_prompt},
@@ -172,8 +196,6 @@ step들을 순서대로 이어 읽었을 때 자연스러운 대화 한 장면�
     )
 
     text = response.choices[0].message.content.strip()
-    print("LLM RAW RESPONSE:")
-    print(repr(text))
 
     if not text:
         raise ValueError("모델이 빈 응답을 반환했음.")
@@ -185,11 +207,12 @@ step들을 순서대로 이어 읽었을 때 자연스러운 대화 한 장면�
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1:
-        raise ValueError(f"JSON 형태를 찾지 못했음. raw={text}")
+        raise ValueError("JSON 형태를 찾지 못했음.")
 
     text = text[start:end+1]
 
-    return json.loads(text)
+    from services.learning.models import ScenarioData
+    return ScenarioData.model_validate(json.loads(text)).model_dump()
 
 
 def _parse_llm_json(raw: str) -> dict:
@@ -200,7 +223,7 @@ def _parse_llm_json(raw: str) -> dict:
     start = raw.find("{")
     end = raw.rfind("}")
     if start == -1 or end == -1:
-        raise ValueError(f"JSON 형태를 찾지 못했음. raw={raw}")
+        raise ValueError("JSON 형태를 찾지 못했음.")
     return json.loads(raw[start:end+1])
 
 
@@ -210,6 +233,7 @@ def regenerate_scenario_from_step(
     levels: list,
     target_level_index: int,
     target_step_index: int,
+    learner_key=None,
 ) -> dict:
     total_levels = len(levels)
 
@@ -218,6 +242,12 @@ def regenerate_scenario_from_step(
     target_steps_count = len(levels[target_level_index].get("steps", []))
     if target_step_index < 0 or target_step_index >= target_steps_count:
         raise ValueError(f"targetStepIndex({target_step_index})가 범위를 벗어났음.")
+
+    if learner_key and learner_key.strip():
+        return _personalized_design(
+            learner_key, scenario_context, goal,
+            lambda: regenerate_scenario_from_step(scenario_context, goal, levels, target_level_index, target_step_index),
+            levels, target_level_index, target_step_index)
 
     # ── 확정된 내용 구성 ────────────────────────────────────────────
     locked_lines = []
@@ -288,7 +318,7 @@ def regenerate_scenario_from_step(
 {json.dumps(output_example, ensure_ascii=False, indent=2)}
 """
 
-    response = client.chat.completions.create(
+    response = _scenario_completion(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": system_prompt},
@@ -297,8 +327,6 @@ def regenerate_scenario_from_step(
     )
 
     raw = response.choices[0].message.content
-    print("LLM REGENERATE RAW RESPONSE:")
-    print(repr(raw))
 
     result = _parse_llm_json(raw)
     regen_levels = result.get("regeneratedLevels", [])
@@ -308,6 +336,16 @@ def regenerate_scenario_from_step(
             f"LLM이 반환한 level 수({len(regen_levels)})가 "
             f"기대값({total_levels - target_level_index})과 다름."
         )
+
+    for offset, regen_level in enumerate(regen_levels):
+        li = target_level_index + offset
+        expected = len(levels[li]["steps"]) - (target_step_index if offset == 0 else 0)
+        if len(regen_level.get("steps", [])) != expected:
+            raise ValueError("LLM이 반환한 step 수가 기대값과 다름.")
+        for item in regen_level["steps"]:
+            if any(not isinstance(item.get(k), str) or not item[k].strip()
+                   for k in ("step", "assistantMessage", "userIntent")):
+                raise ValueError("LLM이 반환한 step 형식이 올바르지 않음.")
 
     # ── 원본 levels에 재생성 결과 병합 ──────────────────────────────
     updated_levels = copy.deepcopy(levels)
@@ -326,3 +364,54 @@ def regenerate_scenario_from_step(
         "goal": goal,
         "levels": updated_levels,
     }
+
+def _personalized_design(key, context, goal, baseline, levels=None, level_index=0, step_index=0):
+    try:
+        from services.learning_workflow import get_learning_workflow
+        workflow = get_learning_workflow()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("learning_failure stage=workflow error_type=%s", type(exc).__name__)
+        return baseline()
+    metrics = {"model_calls": 0, "tokens": 0}
+    def verified_baseline():
+        token = _scenario_trace.set(metrics)
+        try:
+            from services.learning.models import ScenarioData, scenario_core
+            data = baseline()
+            ScenarioData.model_validate(scenario_core(data))
+            return data
+        except Exception as exc:
+            logging.getLogger(__name__).warning("learning_failure stage=baseline_design error_type=%s", type(exc).__name__)
+            return _basic_scenario(context, goal, levels, level_index, step_index)
+        finally:
+            _scenario_trace.reset(token)
+    verified_baseline.metrics = metrics
+    return workflow.design(key, context, goal, verified_baseline, levels, level_index, step_index)
+
+
+def _basic_scenario(context, goal, levels=None, level_index=0, step_index=0):
+    """Deterministic fallback with known request -> clarification -> confirmation flow."""
+    from services.learning.models import DesignInput, ScenarioData, scenario_core
+    from services.learning.agents import merge_preserved
+    prompts = [
+        [("요청 말하기", "원하시는 것을 짧게 말씀해 주세요.", "원하는 것을 한두 단어로 말해 보세요."),
+         ("정보 덧붙이기", "필요한 수량이나 시간을 알려 주세요.", "수량이나 시간 한 가지를 말해 보세요."),
+         ("요청 정리하기", "최종 요청을 한 번 말씀해 주세요.", "원하는 내용을 짧게 다시 말해 보세요.")],
+        [("요청 설명하기", "원하시는 내용과 이유를 함께 말씀해 주세요.", "원하는 것과 이유를 함께 말해 보세요."),
+         ("조건 덧붙이기", "시간이나 수량 외에 필요한 조건을 알려 주세요.", "필요한 조건 두 가지를 말해 보세요."),
+         ("내용 확인하기", "조건을 포함해서 최종 요청을 설명해 주세요.", "요청과 조건을 한 문장으로 정리해 보세요.")],
+        [("대안 제안하기", "처음 요청대로 진행하기 어렵습니다. 어떤 대안을 원하세요?", "가능한 다른 방법과 이유를 말해 보세요."),
+         ("차이 설명하기", "대안을 선택하면 무엇을 조정해야 할까요?", "바꿀 조건과 유지할 조건을 함께 말해 보세요."),
+         ("변경 정리하기", "변경한 내용을 모두 포함해 최종 요청을 알려 주세요.", "변경 내용과 이유를 포함해 자세히 말해 보세요.")],
+    ]
+    data = {"scenarioContext": context, "goal": goal, "levels": []}
+    for i, rows in enumerate(prompts):
+        steps = [{"step": a, "assistantMessage": b, "userIntent": c} for a,b,c in rows]
+        steps[0]["assistantMessage"] = f"{context} 상황입니다. {steps[0]['assistantMessage']}"
+        data["levels"].append({"levelTitle": ["간단히 요청하기", "조건 함께 말하기", "변경 요청하기"][i],
+            "levelDescription": f"{goal}: " + ["짧은 표현으로 요청합니다.", "앞 단계보다 여러 정보를 함께 전달합니다.", "앞 단계보다 복잡한 변경과 대안을 설명합니다."][i],
+            "steps": steps})
+    request = DesignInput(context=context,goal=goal,plan={},levels=levels,level_index=level_index,step_index=step_index)
+    merged = merge_preserved(data, request)
+    ScenarioData.model_validate(scenario_core(merged))
+    return merged

@@ -1,4 +1,5 @@
 import os
+from tempfile import TemporaryDirectory
 from typing import Optional
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
@@ -30,6 +31,7 @@ class ScenarioRequest(BaseModel):
     scenarioContext: str
     goal: str
 
+    learnerKey: Optional[str] = None
 
 class ReferencePracticeRequest(BaseModel):
     s3Url: str
@@ -48,6 +50,7 @@ class RegenerateStepRequest(BaseModel):
     targetLevelIndex: int
     targetStepIndex: int
 
+    learnerKey: Optional[str] = None
 
 class ScenarioPracticeRequest(BaseModel):
     s3Url: str
@@ -56,6 +59,7 @@ class ScenarioPracticeRequest(BaseModel):
     assistantMessage: str
     userIntent: str
 
+    learnerKey: Optional[str] = None
 
 class TTSRequest(BaseModel):
     text: str
@@ -82,8 +86,9 @@ def health():
 def stt(req: STTRequest, x_api_token: Optional[str] = Header(default=None)):
     validate_token(x_api_token)
 
-    raw_path = os.path.join(INPUT_DIR, "stt_input_audio")
-    wav_path = os.path.join(OUTPUT_DIR, "stt_input.wav")
+    workspace = TemporaryDirectory(prefix="stt-", dir=OUTPUT_DIR)
+    raw_path = os.path.join(workspace.name, "input_audio")
+    wav_path = os.path.join(workspace.name, "input.wav")
 
     try:
         download_audio_from_s3(req.s3Url, raw_path)
@@ -96,6 +101,8 @@ def stt(req: STTRequest, x_api_token: Optional[str] = Header(default=None)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        workspace.cleanup()
 
 
 @app.post("/tts")
@@ -113,7 +120,7 @@ def generate_scenario(req: ScenarioRequest, x_api_token: Optional[str] = Header(
     validate_token(x_api_token)
 
     try:
-        result = generate_scenario_levels(req.scenarioContext, req.goal)
+        result = generate_scenario_levels(req.scenarioContext, req.goal, learner_key=req.learnerKey)
         return {
             "success": True,
             "data": result
@@ -133,6 +140,7 @@ def regenerate_step(req: RegenerateStepRequest, x_api_token: Optional[str] = Hea
             levels=req.levels,
             target_level_index=req.targetLevelIndex,
             target_step_index=req.targetStepIndex,
+            learner_key=req.learnerKey,
         )
         return {
             "success": True,
@@ -148,8 +156,9 @@ def regenerate_step(req: RegenerateStepRequest, x_api_token: Optional[str] = Hea
 def practice_reference(req: ReferencePracticeRequest, x_api_token: Optional[str] = Header(default=None)):
     validate_token(x_api_token)
 
-    raw_path = os.path.join(INPUT_DIR, "reference_input_audio")
-    wav_path = os.path.join(OUTPUT_DIR, "reference_input.wav")
+    workspace = TemporaryDirectory(prefix="reference-", dir=OUTPUT_DIR)
+    raw_path = os.path.join(workspace.name, "input_audio")
+    wav_path = os.path.join(workspace.name, "input.wav")
 
     try:
         download_audio_from_s3(req.s3Url, raw_path)
@@ -172,6 +181,8 @@ def practice_reference(req: ReferencePracticeRequest, x_api_token: Optional[str]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        workspace.cleanup()
 
 
 @app.post("/chat/free-talk")
@@ -200,8 +211,9 @@ def free_talk(req: FreeTalkRequest, x_api_token: Optional[str] = Header(default=
 def vowel_practice(req: VowelPracticeRequest, x_api_token: Optional[str] = Header(default=None)):
     validate_token(x_api_token)
 
-    raw_path = os.path.join(INPUT_DIR, "vowel_input_audio")
-    wav_path = os.path.join(OUTPUT_DIR, "vowel_input.wav")
+    workspace = TemporaryDirectory(prefix="vowel-", dir=OUTPUT_DIR)
+    raw_path = os.path.join(workspace.name, "input_audio")
+    wav_path = os.path.join(workspace.name, "input.wav")
 
     try:
         download_audio_from_s3(req.s3Url, raw_path)
@@ -225,14 +237,17 @@ def vowel_practice(req: VowelPracticeRequest, x_api_token: Optional[str] = Heade
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        workspace.cleanup()
 
 
 @app.post("/practice/scenario")
 def practice_scenario(req: ScenarioPracticeRequest, x_api_token: Optional[str] = Header(default=None)):
     validate_token(x_api_token)
 
-    raw_path = os.path.join(INPUT_DIR, "scenario_input_audio")
-    wav_path = os.path.join(OUTPUT_DIR, "scenario_input.wav")
+    workspace = TemporaryDirectory(prefix="scenario-", dir=OUTPUT_DIR)
+    raw_path = os.path.join(workspace.name, "input_audio")
+    wav_path = os.path.join(workspace.name, "input.wav")
 
     try:
         download_audio_from_s3(req.s3Url, raw_path)
@@ -246,6 +261,9 @@ def practice_scenario(req: ScenarioPracticeRequest, x_api_token: Optional[str] =
             step_content, stt_text,
             audio_path=wav_path,
             voice_result=voice_result,
+            learner_key=req.learnerKey,
+            practice_context={"levelTitle": req.levelTitle, "step": req.step,
+                              "assistantMessage": req.assistantMessage, "userIntent": req.userIntent},
         )
 
         return {
@@ -257,3 +275,5 @@ def practice_scenario(req: ScenarioPracticeRequest, x_api_token: Optional[str] =
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        workspace.cleanup()

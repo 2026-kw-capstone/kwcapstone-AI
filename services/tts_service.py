@@ -1,7 +1,7 @@
 from openai import OpenAI
 from config.settings import OPENAI_API_KEY
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY or "not-configured", timeout=20.0, max_retries=0)
 
 def text_to_speech(text: str, voice: str = "nova", speed: float = 1.0) -> bytes:
     """

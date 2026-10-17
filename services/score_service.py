@@ -1,5 +1,9 @@
 import re
+import logging
+import time
+from contextvars import ContextVar, copy_context
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from difflib import SequenceMatcher
 from jiwer import wer, cer
 from openai import OpenAI
@@ -7,7 +11,20 @@ from config.settings import OPENAI_API_KEY
 import json
 from typing import List, Dict, Any, Optional
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY or "not-configured", timeout=20.0, max_retries=0)
+
+_evaluation_trace = ContextVar("evaluation_trace", default=None)
+
+
+def _completion(**kwargs):
+    trace = _evaluation_trace.get()
+    if trace is not None:
+        trace["model_calls"] += 1
+    response = client.chat.completions.create(**kwargs)
+    if trace is not None:
+        trace["tokens"] += getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+    return response
+
 
 # 발음에 영향 없는 구두점·특수문자 제거용 패턴
 # 한글 음절(가-힣), 한글 자모(ㄱ-ㅣ), 숫자, 영문자만 유지
@@ -65,16 +82,20 @@ def decompose_hangul(char: str):
 # ── G2P (Grapheme-to-Phoneme) ──────────────────────────────────────────────
 
 _g2p = None
+_g2p_attempted = False
+_g2p_lock = Lock()
 
 
 def _get_g2p():
-    global _g2p
-    if _g2p is None:
-        try:
-            from g2pk import G2p
-            _g2p = G2p()
-        except Exception:
-            pass
+    global _g2p, _g2p_attempted
+    with _g2p_lock:
+        if not _g2p_attempted:
+            _g2p_attempted = True
+            try:
+                from g2pk import G2p
+                _g2p = G2p()
+            except Exception:
+                pass
     return _g2p
 
 
@@ -112,79 +133,109 @@ def text_to_phoneme_sequence(text: str) -> List[Dict[str, Any]]:
     return seq
 
 
-def build_phoneme_based_analysis(ref_text: str, hyp_text: str):
-    """G2P 음운 변환 + 음소 시퀀스 정렬 기반 발음 분석
+def g2p_evidence(text: str) -> dict:
+    """Keep a conservative source map; length-changing/number expansion is ambiguous."""
+    converter = _get_g2p()
+    try:
+        converted = converter(text) if converter is not None else text
+        available = converter is not None
+    except Exception:
+        converted, available = text, False
+    original, spoken = split_korean_chars(text), split_korean_chars(converted)
+    # Equal syllable counts per token permit the index-preserving Korean rules.
+    tokens = text.split()
+    converted_tokens = converted.split()
+    mapped = (len(tokens) == len(converted_tokens)
+              and all(len(split_korean_chars(a)) == len(split_korean_chars(b))
+                      for a, b in zip(tokens, converted_tokens))
+              and all(decompose_hangul(c) is not None for c in original + spoken))
+    return {"text": converted, "available": available, "mapped": mapped,
+            "original": original, "spoken": spoken}
 
-    처리 흐름:
-    1. 양측 텍스트에 G2P 적용 → 실제 발음 형태 획득
-    2. 음소 시퀀스로 분해 (초/중/종성 flat list)
-    3. SequenceMatcher로 음소 단위 정렬
-    4. ref 음절별 오류 음소 위치(position) 집계
-    5. 음절별 score/grade 산출 → word_analysis 반환 (원본 ref 음절 기준)
 
-    반환: (word_analysis, inserts, insert_feedbacks)
+def align_syllables(ref_chars, hyp_chars):
+    """Minimum edit alignment at syllable boundaries, before phoneme comparison.
+
+    Exact matches anchor insertions/deletions. A tiny phoneme tie-break cost makes
+    equally short alignments prefer the closest substitution; scoring is unchanged.
     """
-    ref_chars = split_korean_chars(ref_text)
-    hyp_chars = split_korean_chars(hyp_text)
-
-    ref_g2p = apply_g2p(ref_text)
-    hyp_g2p = apply_g2p(hyp_text)
-
-    ref_phonemes = text_to_phoneme_sequence(ref_g2p)
-    hyp_phonemes = text_to_phoneme_sequence(hyp_g2p)
-
-    ref_seq = [p["phoneme"] for p in ref_phonemes]
-    hyp_seq = [p["phoneme"] for p in hyp_phonemes]
-
-    n_ref_syls = len(split_korean_chars(ref_g2p))
-    syl_err_positions: Dict[int, set] = {i: set() for i in range(n_ref_syls)}
-
-    inserts: List[str] = []
-    insert_feedbacks: List[str] = []
-
-    for tag, i1, i2, j1, j2 in SequenceMatcher(None, ref_seq, hyp_seq).get_opcodes():
-        if tag == "equal":
-            continue
-        if tag in ("replace", "delete"):
-            for ri in range(i1, i2):
-                ph = ref_phonemes[ri]
-                syl_err_positions[ph["syl_idx"]].add(ph["position"])
-        if tag == "insert":
-            for ji in range(j1, j2):
-                inserts.append(hyp_phonemes[ji]["phoneme"])
-                insert_feedbacks.append("불필요한 발음이 추가되었어요")
-
-    word_analysis = []
-    for syl_idx, ref_char in enumerate(ref_chars):
-        hyp_char = hyp_chars[syl_idx] if syl_idx < len(hyp_chars) else ""
-        err_positions = syl_err_positions.get(syl_idx, set())
-
-        if not hyp_char:
-            score, grade, error_type = 0, "error", "delete"
-            phoneme_diff = {"initial": "missing", "medial": "missing", "final": "missing"}
+    n, m = len(ref_chars), len(hyp_chars)
+    costs = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        costs[i][0] = float(i)
+    for j in range(m + 1):
+        costs[0][j] = float(j)
+    def substitution(a, b):
+        if a == b:
+            return 0.0
+        pa, pb = decompose_hangul(a), decompose_hangul(b)
+        return 1.0 + (sum(pa[k] != pb[k] for k in pa) * .01 if pa and pb else .03)
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            costs[i][j] = min(costs[i-1][j-1] + substitution(ref_chars[i-1], hyp_chars[j-1]),
+                              costs[i-1][j] + 1, costs[i][j-1] + 1)
+    pairs = []
+    i, j = n, m
+    while i or j:
+        if i and j and abs(costs[i][j] - costs[i-1][j-1] - substitution(ref_chars[i-1], hyp_chars[j-1])) < 1e-7:
+            pairs.append((i-1, j-1)); i -= 1; j -= 1
+        elif i and abs(costs[i][j] - costs[i-1][j] - 1) < 1e-7:
+            pairs.append((i-1, None)); i -= 1
         else:
-            diff_count = len(err_positions)
-            score = {0: 100, 1: 70, 2: 40}.get(diff_count, 10)
-            grade = "good" if score >= 100 else ("warn" if score >= 40 else "error")
-            error_type = "+".join(sorted(err_positions)) if err_positions else "equal"
-            phoneme_diff = {
-                pos: ("different" if pos in err_positions else "same")
-                for pos in ("initial", "medial", "final")
-            }
+            pairs.append((None, j-1)); j -= 1
+    return list(reversed(pairs))
 
-        word_analysis.append({
-            "refIndex":    syl_idx,
-            "refChar":     ref_char,
-            "hypChar":     hyp_char,
-            "score":       score,
-            "grade":       grade,
-            "errorType":   error_type,
-            "refParts":    decompose_hangul(ref_char),
-            "hypParts":    decompose_hangul(hyp_char) if hyp_char else None,
-            "phonemeDiff": phoneme_diff,
+
+def build_phoneme_based_analysis(ref_text: str, hyp_text: str):
+    """Align G2P syllables, retaining original and spoken indices internally.
+
+    Keep 100/70/40/10 per 0/1/2/3 differing positions and zero for a
+    deleted syllable. Insertions are recorded but receive no new penalty.
+    Ambiguous G2P source maps remain display-only and cannot update mastery.
+    """
+    ref, hyp = g2p_evidence(ref_text), g2p_evidence(hyp_text)
+    mapped = ref["mapped"] and hyp["mapped"]
+    rc = ref["spoken"] if mapped else ref["original"]
+    hc = hyp["spoken"] if mapped else hyp["original"]
+    words, inserts, insert_feedbacks = [], [], []
+    for ri, hi in align_syllables(rc, hc):
+        if ri is None:
+            inserts.append(hyp["original"][hi])
+            insert_feedbacks.append({"hypIndex": hi, "hypChar": hyp["original"][hi],
+                                     "type": "insert", "spokenChar": hc[hi]})
+            continue
+        ref_char = ref["original"][ri]
+        hyp_char = hyp["original"][hi] if hi is not None else ""
+        diff = analyze_syllable_difference(rc[ri], hc[hi]) if hi is not None else None
+        if hi is None:
+            score, grade, error_type = 0, "error", "delete"
+            phoneme_diff = dict.fromkeys(("initial", "medial", "final"), "missing")
+        else:
+            phoneme_diff = diff["phonemeDiff"]
+            spoken_ref, spoken_hyp = decompose_hangul(rc[ri]), decompose_hangul(hc[hi])
+            if spoken_ref and spoken_hyp and not spoken_ref["final"] and spoken_hyp["final"]:
+                # Old phoneme alignment recorded this as an insertion with NO penalty.
+                # Retain that policy even after anchoring the syllable boundary.
+                phoneme_diff["final"] = "same"
+                inserts.append(spoken_hyp["final"])
+                insert_feedbacks.append({"refIndex": ri, "hypIndex": hi, "hypChar": hyp_char,
+                    "type": "insert_phoneme", "position": "final", "phoneme": spoken_hyp["final"]})
+            count = sum(v == "different" for v in phoneme_diff.values())
+            if diff["type"] == "unknown":
+                count = int(rc[ri] != hc[hi])
+            score = {0: 100, 1: 70, 2: 40}.get(count, 10)
+            grade = "good" if score == 100 else ("warn" if score >= 40 else "error")
+            error_type = ("unknown" if diff["type"] == "unknown" else
+                          "+".join(p for p,v in phoneme_diff.items() if v == "different") or "equal")
+        words.append({
+            "refIndex": ri, "hypIndex": hi, "refChar": ref_char, "hypChar": hyp_char,
+            "score": score, "grade": grade, "errorType": error_type,
+            "refParts": decompose_hangul(ref_char), "hypParts": decompose_hangul(hyp_char),
+            "phonemeDiff": phoneme_diff, "spokenRefParts": decompose_hangul(rc[ri]),
+            "spokenRefChar": rc[ri], "spokenHypChar": hc[hi] if hi is not None else "",
+            "mappingReliable": mapped, "g2pAvailable": ref["available"] and hyp["available"],
         })
-
-    return word_analysis, inserts, insert_feedbacks
+    return words, inserts, insert_feedbacks
 
 
 def analyze_syllable_difference(ref_char: str, hyp_char: str):
@@ -504,7 +555,7 @@ def infer_reference_text(step_content: str, stt_text: str) -> str:
 5. 반드시 JSON으로만 응답해.
 {"inferredReferenceText": "..."}"""
     user_prompt = f"[연습 맥락 (힌트용)]\n{step_content}\n\n[STT 결과 (발음 교정 기준)]\n{stt_text}"
-    response = client.chat.completions.create(
+    response = _completion(
         model="gpt-4o-mini",
         temperature=0.1,
         response_format={"type": "json_object"},
@@ -540,7 +591,9 @@ def build_pronunciation_error_for_llm(
             label = _TYPE_LABEL.get(item.get("errorType", ""), "오류")
             lines.append(f'"{ref}" → "{hyp}" ({label})')
     if insert_feedbacks:
-        lines.append(f"삽입 음절: {', '.join(insert_feedbacks)}")
+        inserted = [str(x.get("phoneme") or x.get("hypChar", "")) if isinstance(x, dict) else str(x)
+                    for x in insert_feedbacks]
+        lines.append(f"삽입 발음: {', '.join(inserted)}")
     return "\n".join(lines) if lines else "오류 없음"
 
 
@@ -580,7 +633,7 @@ def generate_meaning_delivery_feedback(
 [발음 오류 교정 후 추정 문장]
 {reference_text}
 """
-    response = client.chat.completions.create(
+    response = _completion(
         model="gpt-4o-mini",
         temperature=0.3,
         response_format={"type": "json_object"},
@@ -632,7 +685,7 @@ def generate_scenario_pronunciation_feedback(
 {pause_pct}% / 등급 {pause_grade}
 (기준: ≤25% 정상 | warn: 쉬는 구간 많음 | error: 말 막힘 의심)
 """
-    response = client.chat.completions.create(
+    response = _completion(
         model="gpt-4o-mini",
         temperature=0.3,
         response_format={"type": "json_object"},
@@ -686,7 +739,7 @@ def generate_reference_feedback(
 {pause_pct}% / 등급 {pause_grade}
 (기준: ≤25% 정상 | warn: 쉬는 구간 많음 | error: 말 막힘 의심)
 """
-    response = client.chat.completions.create(
+    response = _completion(
         model="gpt-4o-mini",
         temperature=0.3,
         response_format={"type": "json_object"},
@@ -731,7 +784,7 @@ def generate_vowel_feedback(
 점수: {pronunciation.get("score", 0)}/100 / 등급: {pronunciation.get("grade", "")}
 {formant_info}
 """
-    response = client.chat.completions.create(
+    response = _completion(
         model="gpt-4o-mini",
         temperature=0.3,
         response_format={"type": "json_object"},
@@ -816,12 +869,15 @@ def evaluate_reference_response(
     }
 
 
-def evaluate_scenario_response(
+def _evaluate_scenario_response(
     step_content: str,
     stt_text: str,
     audio_path: Optional[str] = None,
     voice_result: Optional[Dict[str, Any]] = None,
-    whisperx_words: Optional[List[Dict[str, Any]]] = None
+    whisperx_words: Optional[List[Dict[str, Any]]] = None,
+    learner_key: Optional[str] = None,
+    practice_context: Optional[Dict[str, Any]] = None,
+    personalization=None,
 ):
     """
     시나리오 맥락 기반 발음 평가.
@@ -855,26 +911,59 @@ def evaluate_scenario_response(
     speech_rate = (voice_result or {}).get("speechRate", {})
     pause_ratio = (voice_result or {}).get("silenceRatio", {})
 
+    def baseline_pronunciation():
+        return generate_scenario_pronunciation_feedback(
+            reference_text=reference_text, pronunciation_error_summary=pronunciation_error_summary,
+            speech_rate=speech_rate, pause_ratio=pause_ratio)
+
+    personalized = bool(learner_key and learner_key.strip())
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_meaning = executor.submit(
-            generate_meaning_delivery_feedback,
-            step_content=step_content,
-            stt_text=stt_text,
-            reference_text=reference_text,
-        )
-        future_pron = executor.submit(
-            generate_scenario_pronunciation_feedback,
-            reference_text=reference_text,
-            pronunciation_error_summary=pronunciation_error_summary,
-            speech_rate=speech_rate,
-            pause_ratio=pause_ratio,
-        )
+            copy_context().run, generate_meaning_delivery_feedback,
+            step_content=step_content, stt_text=stt_text, reference_text=reference_text)
+        # A personalized coach replaces the old pronunciation LLM call; infrastructure
+        # failure invokes it lazily. Meaning scoring remains independent of history.
+        future_pron = None if personalized else executor.submit(copy_context().run, baseline_pronunciation)
         meaning_result = future_meaning.result()
-        pron_result = future_pron.result()
+        pron_result = future_pron.result() if future_pron else {
+            "pronunciationFeedback": build_overall_rule_feedback(word_analysis, insert_feedbacks)}
 
     meaning_delivery_score = clamp(safe_int(meaning_result.get("meaningDeliveryScore", 0)), 0, 100)
     meaning_delivery_feedback = meaning_result.get("meaningDeliveryFeedback", "").strip()
     pronunciation_feedback = pron_result.get("pronunciationFeedback", "").strip()
+
+    fallback_cache = []
+    trace = {}
+    def fallback_pronunciation_text():
+        if not fallback_cache:
+            try:
+                text = baseline_pronunciation().get("pronunciationFeedback", "")
+            except Exception as exc:
+                logging.getLogger(__name__).warning("learning_failure stage=baseline_coach error_type=%s", type(exc).__name__)
+                text = "짧은 말을 한 번 더 또렷하게 녹음해 연습해 보세요."
+            fallback_cache.append(text)
+        latest = _evaluation_trace.get() or {}
+        trace.update({k: latest.get(k, 0) for k in ("model_calls", "tokens")})
+        return fallback_cache[0]
+
+    if learner_key and learner_key.strip():
+        try:
+            from services.learning_workflow import get_learning_workflow
+            workflow = personalization or get_learning_workflow()
+            trace = dict(_evaluation_trace.get() or {})
+            trace["latency_ms"] = round((time.monotonic() - trace.pop("started", time.monotonic())) * 1000, 2)
+            revised = workflow.process_practice(
+                learner_key, practice_context or {"context": step_content},
+                reference_text, stt_text, acoustic_text, word_analysis, insert_feedbacks,
+                voice_result or {}, avg_word_score, meaning_delivery_score,
+                meaning_delivery_feedback, pronunciation_feedback, evaluation_trace=trace,
+                fallback_pronunciation=fallback_pronunciation_text,
+            )
+            meaning_delivery_feedback = revised["meaningDeliveryFeedback"]
+            pronunciation_feedback = revised["pronunciationFeedback"]
+        except Exception as exc:
+            logging.getLogger(__name__).warning("learning_failure stage=workflow error_type=%s", type(exc).__name__)
+            pronunciation_feedback = fallback_pronunciation_text()
 
     simplified_word_analysis = [
         {"refChar": item["refChar"], "hypChar": item["hypChar"], "grade": item["grade"]}
@@ -891,3 +980,14 @@ def evaluate_scenario_response(
         "pronunciationFeedback": pronunciation_feedback,
         "wordAnalysis": simplified_word_analysis,
     }
+
+
+def evaluate_scenario_response(*args, **kwargs):
+    token = _evaluation_trace.set({"model_calls": 0, "tokens": 0, "started": time.monotonic()})
+    try:
+        return _evaluate_scenario_response(*args, **kwargs)
+    finally:
+        trace = _evaluation_trace.get()
+        logging.getLogger(__name__).info("scenario_evaluation elapsed_ms=%.2f model_calls=%s tokens=%s",
+            (time.monotonic() - trace["started"]) * 1000, trace["model_calls"], trace["tokens"])
+        _evaluation_trace.reset(token)

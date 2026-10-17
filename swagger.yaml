@@ -298,6 +298,10 @@ paths:
             schema:
               type: object
               properties:
+                learnerKey:
+                  type: string
+                  nullable: true
+                  description: 인증된 사용자의 고정 식별키. 누락 또는 공백이면 개인 이력 저장·조회 없이 처리.
                 scenarioContext:
                   type: string
                   description: 시나리오 상황
@@ -356,6 +360,10 @@ paths:
             schema:
               type: object
               properties:
+                learnerKey:
+                  type: string
+                  nullable: true
+                  description: 인증된 사용자의 고정 식별키. 누락 또는 공백이면 개인 이력 저장·조회 없이 처리.
                 scenarioContext:
                   type: string
                   example: "동네 카페에서 음료 주문하기"
@@ -655,6 +663,10 @@ paths:
             schema:
               type: object
               properties:
+                learnerKey:
+                  type: string
+                  nullable: true
+                  description: 인증된 사용자의 고정 식별키. 누락 또는 공백이면 개인 이력 저장·조회 없이 처리.
                 s3Url:
                   type: string
                   description: 음성 파일의 S3 URL

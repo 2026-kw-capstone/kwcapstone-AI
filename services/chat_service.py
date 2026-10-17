@@ -2,7 +2,7 @@ from openai import OpenAI
 from config.settings import OPENAI_API_KEY
 from typing import List, Dict, Optional
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY or "not-configured", timeout=20.0, max_retries=0)
 
 
 def build_context_messages(

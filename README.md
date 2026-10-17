@@ -230,3 +230,7 @@ $$\text{pronunciationScore} = \frac{1}{N} \sum_{i=1}^{N} \text{syllableScore}_i$
 - **Evaluation**: JiWER (WER/CER), Difflib (SequenceMatcher)
 - **Environment**: python-dotenv, Python 3.9+
 - **Build Tools** (macOS): ninja, ant (g2pk 의존성)
+
+## 개인화 시나리오 학습
+
+세 시나리오 API에서 선택 필드 `learnerKey`를 지원합니다. PostgreSQL + pgvector에 관찰·학습 상태·피드백을 저장하고, 전체 유효 관찰의 SQL 통계와 관련 과거 안내 검색을 분리합니다. DB 스키마 적용, 설정, 에이전트/워크플로 구분, 장애 fallback, 테스트 및 남은 한계는 [개인화 파이프라인 문서](docs/personalized-learning.md)를 참고하세요. 기존 API 응답 구조는 유지합니다.
