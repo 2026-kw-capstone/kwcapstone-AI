@@ -27,7 +27,7 @@ class LearningConfig:
     review_days: float = field(default_factory=lambda: float(os.getenv("LEARNING_REVIEW_DAYS", "3")))
     recent_window: int = field(default_factory=lambda: int(os.getenv("LEARNING_RECENT_WINDOW", "6")))
     silence_limit: float = field(default_factory=lambda: float(os.getenv("LEARNING_SILENCE_LIMIT", "95")))
-    disagreement_limit: float = field(default_factory=lambda: float(os.getenv("LEARNING_DISAGREEMENT_LIMIT", "0")))
+    disagreement_limit: float = field(default_factory=lambda: float(os.getenv("LEARNING_DISAGREEMENT_LIMIT", "0.3")))
     role_timeout: float = field(default_factory=lambda: float(os.getenv("LEARNING_ROLE_TIMEOUT", "15")))
     max_model_calls: int = field(default_factory=lambda: int(os.getenv("LEARNING_MAX_MODEL_CALLS", "4")))
     max_tool_calls: int = field(default_factory=lambda: int(os.getenv("LEARNING_MAX_TOOL_CALLS", "4")))
